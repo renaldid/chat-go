@@ -13,6 +13,8 @@ FROM alpine:3.22
 
 WORKDIR /app
 
+ENV GIN_MODE=release
+
 COPY --from=builder /app/chat-go ./chat-go
 
 EXPOSE 8080
