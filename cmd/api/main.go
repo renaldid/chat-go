@@ -11,13 +11,25 @@ import (
 	"time"
 
 	"github.com/renaldid/chat-go/internal/config"
+	"github.com/renaldid/chat-go/internal/database"
 	"github.com/renaldid/chat-go/internal/handler"
 )
 
 func main() {
 	cfg := config.Load()
 
-	router := handler.NewRouter()
+	ctx := context.Background()
+
+	db, err := database.NewPostgresPool(ctx, cfg)
+	if err != nil {
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	slog.Info("database connected")
+
+	router := handler.NewRouter(db)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -41,10 +53,10 @@ func main() {
 
 	slog.Info("shutting down server")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
 		os.Exit(1)
 	}

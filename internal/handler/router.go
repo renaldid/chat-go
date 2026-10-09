@@ -1,14 +1,19 @@
 package handler
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
 
-func NewRouter() *gin.Engine {
+func NewRouter(db *pgxpool.Pool) *gin.Engine {
 	r := gin.New()
 
 	r.Use(gin.Recovery())
 	r.Use(RequestLogger())
 
-	r.GET("/health", HealthCheck)
+	healthHandler := NewHealthHandler(db)
+
+	r.GET("/health", healthHandler.Check)
 
 	return r
 }
