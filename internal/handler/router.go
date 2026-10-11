@@ -20,12 +20,22 @@ func NewRouter(db *pgxpool.Pool) *gin.Engine {
 	userService := service.NewUserService(userRepository)
 	userHandler := NewUserHandler(userService)
 
+	conversationRepository := repository.NewConversationRepositoryPostgres(db)
+	conversationService := service.NewConversationService(conversationRepository)
+	conversationHandler := NewConversationHandler(conversationService)
+
 	r.GET("/health", healthHandler.Check)
 
 	users := r.Group("/users")
 	{
 		users.POST("", userHandler.Create)
 		users.GET("/:id", userHandler.GetByID)
+	}
+
+	conversations := r.Group("/conversations")
+	{
+		conversations.POST("", conversationHandler.Create)
+		conversations.GET("/:id", conversationHandler.GetByID)
 	}
 
 	return r
