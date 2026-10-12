@@ -29,7 +29,7 @@ func main() {
 
 	slog.Info("database connected")
 
-	router := handler.NewRouter(db)
+	router := handler.NewRouter(db, cfg)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,

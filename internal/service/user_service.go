@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/renaldid/chat-go/internal/model"
 	"github.com/renaldid/chat-go/internal/repository"
 )
@@ -12,6 +14,8 @@ import (
 var (
 	ErrUsernameRequired    = errors.New("username is required")
 	ErrDisplayNameRequired = errors.New("display name is required")
+	ErrPasswordRequired    = errors.New("password is required")
+	ErrPasswordTooShort    = errors.New("password must be at least 8 characters")
 	ErrUsernameExists      = errors.New("username already exists")
 	ErrUserNotFound        = errors.New("user not found")
 )
@@ -30,6 +34,7 @@ func (s *UserService) Create(
 	ctx context.Context,
 	username string,
 	displayName string,
+	password string,
 ) (*model.User, error) {
 	username = strings.TrimSpace(username)
 	displayName = strings.TrimSpace(displayName)
@@ -42,6 +47,14 @@ func (s *UserService) Create(
 		return nil, ErrDisplayNameRequired
 	}
 
+	if password == "" {
+		return nil, ErrPasswordRequired
+	}
+
+	if len(password) < 8 {
+		return nil, ErrPasswordTooShort
+	}
+
 	existingUser, err := s.userRepository.GetByUsername(ctx, username)
 	if err != nil {
 		return nil, err
@@ -51,9 +64,18 @@ func (s *UserService) Create(
 		return nil, ErrUsernameExists
 	}
 
+	passwordHash, err := bcrypt.GenerateFromPassword(
+		[]byte(password),
+		bcrypt.DefaultCost,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	user := &model.User{
-		Username:    username,
-		DisplayName: displayName,
+		Username:     username,
+		DisplayName:  displayName,
+		PasswordHash: string(passwordHash),
 	}
 
 	if err := s.userRepository.Create(ctx, user); err != nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -15,15 +16,23 @@ type Config struct {
 	DBUser     string
 	DBPassword string
 	DBSSLMode  string
+
+	JWTSecret     string
+	JWTExpiration time.Duration
 }
 
 func Load() Config {
 	_ = godotenv.Load()
 
-	port := getEnv("PORT", "8080")
+	jwtExpiration, err := time.ParseDuration(
+		getEnv("JWT_EXPIRATION", "24h"),
+	)
+	if err != nil {
+		jwtExpiration = 24 * time.Hour
+	}
 
 	return Config{
-		Port: port,
+		Port: getEnv("PORT", "8080"),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnv("DB_PORT", "5432"),
@@ -31,6 +40,9 @@ func Load() Config {
 		DBUser:     getEnv("DB_USER", "chat_go"),
 		DBPassword: getEnv("DB_PASSWORD", "chat_go"),
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
+
+		JWTSecret:     getEnv("JWT_SECRET", "change-me"),
+		JWTExpiration: jwtExpiration,
 	}
 }
 

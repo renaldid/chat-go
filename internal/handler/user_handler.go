@@ -23,6 +23,7 @@ func NewUserHandler(userService *service.UserService) *UserHandler {
 type createUserRequest struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+	Password    string `json:"password"`
 }
 
 func (h *UserHandler) Create(c *gin.Context) {
@@ -39,6 +40,7 @@ func (h *UserHandler) Create(c *gin.Context) {
 		c.Request.Context(),
 		req.Username,
 		req.DisplayName,
+		req.Password,
 	)
 	if err != nil {
 		switch {
@@ -46,14 +48,27 @@ func (h *UserHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": service.ErrUsernameRequired.Error(),
 			})
+
 		case errors.Is(err, service.ErrDisplayNameRequired):
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": service.ErrDisplayNameRequired.Error(),
 			})
+
+		case errors.Is(err, service.ErrPasswordRequired):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": service.ErrPasswordRequired.Error(),
+			})
+
+		case errors.Is(err, service.ErrPasswordTooShort):
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": service.ErrPasswordTooShort.Error(),
+			})
+
 		case errors.Is(err, service.ErrUsernameExists):
 			c.JSON(http.StatusConflict, gin.H{
 				"error": service.ErrUsernameExists.Error(),
 			})
+
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "internal server error",

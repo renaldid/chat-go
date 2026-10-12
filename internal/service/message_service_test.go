@@ -69,6 +69,7 @@ func TestMessageServiceCreate(t *testing.T) {
 		context.Background(),
 		"renaldid",
 		"Renaldi",
+		"password123",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -214,6 +215,7 @@ func TestMessageServiceCreateSenderNotMember(t *testing.T) {
 		context.Background(),
 		"renaldid",
 		"Renaldi",
+		"password123",
 	)
 
 	conversation, _ := conversationService.Create(

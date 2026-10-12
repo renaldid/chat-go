@@ -4,13 +4,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/renaldid/chat-go/internal/auth"
+	"github.com/renaldid/chat-go/internal/config"
 	"github.com/renaldid/chat-go/internal/repository"
 	"github.com/renaldid/chat-go/internal/service"
 )
 
-func NewRouter(db *pgxpool.Pool) *gin.Engine {
+func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	r := gin.New()
-
 	r.Use(gin.Recovery())
 	r.Use(RequestLogger())
 
@@ -19,6 +20,16 @@ func NewRouter(db *pgxpool.Pool) *gin.Engine {
 	userRepository := repository.NewUserRepositoryPostgres(db)
 	userService := service.NewUserService(userRepository)
 	userHandler := NewUserHandler(userService)
+
+	jwtManager := auth.NewJWTManager(
+		cfg.JWTSecret,
+		cfg.JWTExpiration,
+	)
+	authService := service.NewAuthService(
+		userRepository,
+		jwtManager,
+	)
+	authHandler := NewAuthHandler(authService)
 
 	conversationRepository := repository.NewConversationRepositoryPostgres(db)
 	conversationService := service.NewConversationService(conversationRepository)
@@ -30,9 +41,7 @@ func NewRouter(db *pgxpool.Pool) *gin.Engine {
 		userRepository,
 		conversationMemberRepository,
 	)
-	conversationMemberHandler := NewConversationMemberHandler(
-		conversationMemberService,
-	)
+	conversationMemberHandler := NewConversationMemberHandler(conversationMemberService)
 
 	messageRepository := repository.NewMessageRepositoryPostgres(db)
 	messageService := service.NewMessageService(
@@ -45,6 +54,11 @@ func NewRouter(db *pgxpool.Pool) *gin.Engine {
 
 	r.GET("/health", healthHandler.Check)
 
+	authRoutes := r.Group("/auth")
+	{
+		authRoutes.POST("/login", authHandler.Login)
+	}
+
 	users := r.Group("/users")
 	{
 		users.POST("", userHandler.Create)
@@ -55,10 +69,8 @@ func NewRouter(db *pgxpool.Pool) *gin.Engine {
 	{
 		conversations.POST("", conversationHandler.Create)
 		conversations.GET("/:id", conversationHandler.GetByID)
-
 		conversations.POST("/:id/members", conversationMemberHandler.Add)
-
-		conversations.POST("/:id/messages", messageHandler.Create)
+		conversations.POST("/:id/messages", AuthMiddleware(jwtManager), messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
 	}
 

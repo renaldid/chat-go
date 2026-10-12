@@ -23,8 +23,7 @@ func NewMessageHandler(
 }
 
 type createMessageRequest struct {
-	SenderID int64  `json:"sender_id"`
-	Content  string `json:"content"`
+	Content string `json:"content"`
 }
 
 func (h *MessageHandler) Create(c *gin.Context) {
@@ -36,9 +35,17 @@ func (h *MessageHandler) Create(c *gin.Context) {
 		return
 	}
 
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "unauthorized",
+		})
+		return
+	}
+
 	var req createMessageRequest
 
-	if err := c.ShouldBindJSON(&req); err != nil || req.SenderID <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "invalid request body",
 		})
@@ -48,7 +55,7 @@ func (h *MessageHandler) Create(c *gin.Context) {
 	message, err := h.messageService.Create(
 		c.Request.Context(),
 		conversationID,
-		req.SenderID,
+		userID,
 		req.Content,
 	)
 	if err != nil {

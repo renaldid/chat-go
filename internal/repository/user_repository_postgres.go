@@ -25,9 +25,10 @@ func (r *UserRepositoryPostgres) Create(ctx context.Context, user *model.User) e
 	query := `
 		INSERT INTO users (
 			username,
-			display_name
+			display_name,
+			password_hash
 		)
-		VALUES ($1, $2)
+		VALUES ($1, $2, $3)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -36,6 +37,7 @@ func (r *UserRepositoryPostgres) Create(ctx context.Context, user *model.User) e
 		query,
 		user.Username,
 		user.DisplayName,
+		user.PasswordHash,
 	).Scan(
 		&user.ID,
 		&user.CreatedAt,
@@ -57,6 +59,7 @@ func (r *UserRepositoryPostgres) GetByID(
 			id,
 			username,
 			display_name,
+			password_hash,
 			created_at,
 			updated_at
 		FROM users
@@ -69,6 +72,7 @@ func (r *UserRepositoryPostgres) GetByID(
 		&user.ID,
 		&user.Username,
 		&user.DisplayName,
+		&user.PasswordHash,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -92,6 +96,7 @@ func (r *UserRepositoryPostgres) GetByUsername(
 			id,
 			username,
 			display_name,
+			password_hash,
 			created_at,
 			updated_at
 		FROM users
@@ -104,6 +109,7 @@ func (r *UserRepositoryPostgres) GetByUsername(
 		&user.ID,
 		&user.Username,
 		&user.DisplayName,
+		&user.PasswordHash,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)

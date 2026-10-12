@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/renaldid/chat-go/internal/model"
 )
 
@@ -50,10 +52,13 @@ func TestUserServiceCreate(t *testing.T) {
 	repo := newMockUserRepository()
 	svc := NewUserService(repo)
 
+	password := "password123"
+
 	user, err := svc.Create(
 		context.Background(),
 		"renaldid",
 		"Renaldi",
+		password,
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -66,6 +71,21 @@ func TestUserServiceCreate(t *testing.T) {
 	if user.Username != "renaldid" {
 		t.Fatalf("expected username renaldid, got %s", user.Username)
 	}
+
+	if user.PasswordHash == "" {
+		t.Fatal("expected password hash to be set")
+	}
+
+	if user.PasswordHash == password {
+		t.Fatal("password must not be stored as plain text")
+	}
+
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(user.PasswordHash),
+		[]byte(password),
+	); err != nil {
+		t.Fatalf("password hash does not match password: %v", err)
+	}
 }
 
 func TestUserServiceCreateUsernameRequired(t *testing.T) {
@@ -76,6 +96,7 @@ func TestUserServiceCreateUsernameRequired(t *testing.T) {
 		context.Background(),
 		"",
 		"Renaldi",
+		"password123",
 	)
 
 	if !errors.Is(err, ErrUsernameRequired) {
@@ -91,10 +112,43 @@ func TestUserServiceCreateDisplayNameRequired(t *testing.T) {
 		context.Background(),
 		"renaldid",
 		"",
+		"password123",
 	)
 
 	if !errors.Is(err, ErrDisplayNameRequired) {
 		t.Fatalf("expected ErrDisplayNameRequired, got %v", err)
+	}
+}
+
+func TestUserServiceCreatePasswordRequired(t *testing.T) {
+	repo := newMockUserRepository()
+	svc := NewUserService(repo)
+
+	_, err := svc.Create(
+		context.Background(),
+		"renaldid",
+		"Renaldi",
+		"",
+	)
+
+	if !errors.Is(err, ErrPasswordRequired) {
+		t.Fatalf("expected ErrPasswordRequired, got %v", err)
+	}
+}
+
+func TestUserServiceCreatePasswordTooShort(t *testing.T) {
+	repo := newMockUserRepository()
+	svc := NewUserService(repo)
+
+	_, err := svc.Create(
+		context.Background(),
+		"renaldid",
+		"Renaldi",
+		"1234567",
+	)
+
+	if !errors.Is(err, ErrPasswordTooShort) {
+		t.Fatalf("expected ErrPasswordTooShort, got %v", err)
 	}
 }
 
@@ -106,6 +160,7 @@ func TestUserServiceCreateDuplicateUsername(t *testing.T) {
 		context.Background(),
 		"renaldid",
 		"Renaldi",
+		"password123",
 	)
 	if err != nil {
 		t.Fatalf("expected first create to succeed, got %v", err)
@@ -115,6 +170,7 @@ func TestUserServiceCreateDuplicateUsername(t *testing.T) {
 		context.Background(),
 		"renaldid",
 		"Another User",
+		"password456",
 	)
 
 	if !errors.Is(err, ErrUsernameExists) {
@@ -130,6 +186,7 @@ func TestUserServiceGetByID(t *testing.T) {
 		context.Background(),
 		"renaldid",
 		"Renaldi",
+		"password123",
 	)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
