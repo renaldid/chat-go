@@ -77,3 +77,7 @@ func (s *ConversationMemberService) Add(
 
 	return member, nil
 }
+
+func (s *ConversationMemberService) IsMember(ctx context.Context, conversationID int64, userID int64) (bool, error) {
+	return s.conversationMemberRepository.Exists(ctx, conversationID, userID)
+}

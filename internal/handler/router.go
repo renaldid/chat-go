@@ -8,10 +8,12 @@ import (
 	"github.com/renaldid/chat-go/internal/config"
 	"github.com/renaldid/chat-go/internal/repository"
 	"github.com/renaldid/chat-go/internal/service"
+	ws "github.com/renaldid/chat-go/internal/websocket"
 )
 
 func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	r := gin.New()
+
 	r.Use(gin.Recovery())
 	r.Use(RequestLogger())
 
@@ -21,14 +23,8 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	userService := service.NewUserService(userRepository)
 	userHandler := NewUserHandler(userService)
 
-	jwtManager := auth.NewJWTManager(
-		cfg.JWTSecret,
-		cfg.JWTExpiration,
-	)
-	authService := service.NewAuthService(
-		userRepository,
-		jwtManager,
-	)
+	jwtManager := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiration)
+	authService := service.NewAuthService(userRepository, jwtManager)
 	authHandler := NewAuthHandler(authService)
 
 	conversationRepository := repository.NewConversationRepositoryPostgres(db)
@@ -52,6 +48,16 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	)
 	messageHandler := NewMessageHandler(messageService)
 
+	websocketHub := ws.NewHub()
+	websocketHandler := NewWebSocketHandler(
+		websocketHub,
+		messageService,
+		conversationService,
+		conversationMemberService,
+		jwtManager,
+		cfg.WSAllowedOrigin,
+	)
+
 	r.GET("/health", healthHandler.Check)
 
 	authRoutes := r.Group("/auth")
@@ -73,6 +79,8 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 		conversations.POST("/:id/messages", AuthMiddleware(jwtManager), messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
 	}
+
+	r.GET("/ws/conversations/:id", websocketHandler.Connect)
 
 	return r
 }
