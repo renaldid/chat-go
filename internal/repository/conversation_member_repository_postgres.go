@@ -28,10 +28,19 @@ func (r *ConversationMemberRepositoryPostgres) Add(
 	query := `
 		INSERT INTO conversation_members (
 			conversation_id,
-			user_id
+			user_id,
+			last_read_message_id
 		)
-		VALUES ($1, $2)
-		RETURNING joined_at
+		VALUES (
+			$1,
+			$2,
+			(
+				SELECT MAX(id)
+				FROM messages
+				WHERE conversation_id = $1
+			)
+		)
+		RETURNING joined_at, last_read_message_id
 	`
 
 	err := r.db.QueryRow(
@@ -39,7 +48,10 @@ func (r *ConversationMemberRepositoryPostgres) Add(
 		query,
 		member.ConversationID,
 		member.UserID,
-	).Scan(&member.JoinedAt)
+	).Scan(
+		&member.JoinedAt,
+		&member.LastReadMessageID,
+	)
 	if err != nil {
 		return fmt.Errorf("add conversation member: %w", err)
 	}
@@ -73,4 +85,37 @@ func (r *ConversationMemberRepositoryPostgres) Exists(
 	}
 
 	return exists, nil
+}
+
+func (r *ConversationMemberRepositoryPostgres) MarkRead(
+	ctx context.Context,
+	conversationID int64,
+	userID int64,
+	messageID int64,
+) (int64, error) {
+	query := `
+		UPDATE conversation_members
+		SET last_read_message_id = CASE
+			WHEN last_read_message_id IS NULL OR last_read_message_id < $3
+			THEN $3
+			ELSE last_read_message_id
+		END
+		WHERE conversation_id = $1
+		  AND user_id = $2
+		RETURNING last_read_message_id
+	`
+
+	var lastReadMessageID int64
+
+	if err := r.db.QueryRow(
+		ctx,
+		query,
+		conversationID,
+		userID,
+		messageID,
+	).Scan(&lastReadMessageID); err != nil {
+		return 0, fmt.Errorf("mark conversation read: %w", err)
+	}
+
+	return lastReadMessageID, nil
 }

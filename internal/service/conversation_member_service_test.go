@@ -47,6 +47,27 @@ func (m *mockConversationMemberRepository) Exists(
 	return exists, nil
 }
 
+func (m *mockConversationMemberRepository) MarkRead(
+	ctx context.Context,
+	conversationID int64,
+	userID int64,
+	messageID int64,
+) (int64, error) {
+	key := [2]int64{conversationID, userID}
+
+	member, exists := m.members[key]
+	if !exists {
+		return 0, errors.New("member not found")
+	}
+
+	if member.LastReadMessageID == nil || *member.LastReadMessageID < messageID {
+		value := messageID
+		member.LastReadMessageID = &value
+	}
+
+	return *member.LastReadMessageID, nil
+}
+
 func TestConversationMemberServiceAdd(t *testing.T) {
 	userRepo := newMockUserRepository()
 	conversationRepo := newMockConversationRepository()

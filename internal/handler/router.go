@@ -13,7 +13,6 @@ import (
 
 func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	r := gin.New()
-
 	r.Use(gin.Recovery())
 	r.Use(RequestLogger())
 
@@ -52,6 +51,13 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	)
 	messageHandler := NewMessageHandler(messageService)
 
+	readReceiptService := service.NewReadReceiptService(
+		conversationRepository,
+		conversationMemberRepository,
+		messageRepository,
+	)
+	readReceiptHandler := NewReadReceiptHandler(readReceiptService)
+
 	websocketHub := ws.NewHub()
 	websocketHandler := NewWebSocketHandler(
 		websocketHub,
@@ -83,6 +89,7 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 		conversations.POST("/:id/members", conversationMemberHandler.Add)
 		conversations.POST("/:id/messages", messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
+		conversations.PATCH("/:id/read", readReceiptHandler.MarkRead)
 	}
 
 	r.GET("/ws/conversations/:id", websocketHandler.Connect)

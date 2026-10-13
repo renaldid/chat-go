@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/renaldid/chat-go/internal/model"
@@ -148,4 +150,33 @@ func (r *MessageRepositoryPostgres) GetByConversationID(
 	}
 
 	return messages, nil
+}
+
+func (r *MessageRepositoryPostgres) GetByID(
+	ctx context.Context,
+	id int64,
+) (*model.Message, error) {
+	query := `
+		SELECT id, conversation_id, sender_id, content, created_at
+		FROM messages
+		WHERE id = $1
+	`
+
+	message := &model.Message{}
+
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&message.ID,
+		&message.ConversationID,
+		&message.SenderID,
+		&message.Content,
+		&message.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get message by id: %w", err)
+	}
+
+	return message, nil
 }

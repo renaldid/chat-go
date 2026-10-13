@@ -56,6 +56,19 @@ func (m *mockMessageRepository) GetByConversationID(
 	return result, nil
 }
 
+func (m *mockMessageRepository) GetByID(
+	ctx context.Context,
+	id int64,
+) (*model.Message, error) {
+	for i := range m.messages {
+		if m.messages[i].ID == id {
+			return &m.messages[i], nil
+		}
+	}
+
+	return nil, nil
+}
+
 func TestMessageServiceCreate(t *testing.T) {
 	userRepo := newMockUserRepository()
 	conversationRepo := newMockConversationRepository()

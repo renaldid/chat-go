@@ -77,7 +77,12 @@ func (s *ConversationService) GetByID(ctx context.Context, id int64, userID int6
 	return conversation, nil
 }
 
-func (s *ConversationService) ListByUserID(ctx context.Context, userID int64, limit int, offset int) ([]model.Conversation, error) {
+func (s *ConversationService) ListByUserID(
+	ctx context.Context,
+	userID int64,
+	limit int,
+	offset int,
+) ([]model.ConversationSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}

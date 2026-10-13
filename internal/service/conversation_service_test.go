@@ -32,15 +32,25 @@ func (m *mockConversationRepository) GetByID(ctx context.Context, id int64) (*mo
 	return conversation, nil
 }
 
-func (m *mockConversationRepository) ListByUserID(ctx context.Context, userID int64, limit int, offset int) ([]model.Conversation, error) {
-	result := make([]model.Conversation, 0)
+func (m *mockConversationRepository) ListByUserID(
+	ctx context.Context,
+	userID int64,
+	limit int,
+	offset int,
+) ([]model.ConversationSummary, error) {
+	result := make([]model.ConversationSummary, 0)
 
 	for _, conversation := range m.conversations {
-		result = append(result, *conversation)
+		result = append(result, model.ConversationSummary{
+			ID:        conversation.ID,
+			Title:     conversation.Title,
+			CreatedAt: conversation.CreatedAt,
+			UpdatedAt: conversation.UpdatedAt,
+		})
 	}
 
 	if offset >= len(result) {
-		return []model.Conversation{}, nil
+		return []model.ConversationSummary{}, nil
 	}
 
 	end := offset + limit

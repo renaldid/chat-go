@@ -63,11 +63,28 @@ func (r *ConversationRepositoryPostgres) GetByID(ctx context.Context, id int64) 
 	return conversation, nil
 }
 
-func (r *ConversationRepositoryPostgres) ListByUserID(ctx context.Context, userID int64, limit int, offset int) ([]model.Conversation, error) {
+func (r *ConversationRepositoryPostgres) ListByUserID(
+	ctx context.Context,
+	userID int64,
+	limit int,
+	offset int,
+) ([]model.ConversationSummary, error) {
 	query := `
-		SELECT c.id, c.title, c.created_at, c.updated_at
+		SELECT
+			c.id,
+			c.title,
+			c.created_at,
+			c.updated_at,
+			(
+				SELECT COUNT(*)
+				FROM messages m
+				WHERE m.conversation_id = c.id
+				  AND m.id > COALESCE(cm.last_read_message_id, 0)
+				  AND m.sender_id <> cm.user_id
+			) AS unread_count
 		FROM conversations c
-		INNER JOIN conversation_members cm ON cm.conversation_id = c.id
+		INNER JOIN conversation_members cm
+			ON cm.conversation_id = c.id
 		WHERE cm.user_id = $1
 		ORDER BY c.updated_at DESC, c.id DESC
 		LIMIT $2 OFFSET $3
@@ -79,16 +96,17 @@ func (r *ConversationRepositoryPostgres) ListByUserID(ctx context.Context, userI
 	}
 	defer rows.Close()
 
-	conversations := make([]model.Conversation, 0)
+	conversations := make([]model.ConversationSummary, 0)
 
 	for rows.Next() {
-		var conversation model.Conversation
+		var conversation model.ConversationSummary
 
 		if err := rows.Scan(
 			&conversation.ID,
 			&conversation.Title,
 			&conversation.CreatedAt,
 			&conversation.UpdatedAt,
+			&conversation.UnreadCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
