@@ -105,15 +105,30 @@ func (h *MessageHandler) GetByConversationID(c *gin.Context) {
 		return
 	}
 
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid limit"})
+		return
+	}
 
-	messages, err := h.messageService.GetByConversationID(
+	var cursor *int64
+
+	if rawCursor := c.Query("cursor"); rawCursor != "" {
+		parsedCursor, err := strconv.ParseInt(rawCursor, 10, 64)
+		if err != nil || parsedCursor <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cursor"})
+			return
+		}
+
+		cursor = &parsedCursor
+	}
+
+	page, err := h.messageService.GetByConversationID(
 		c.Request.Context(),
 		conversationID,
 		userID,
+		cursor,
 		limit,
-		offset,
 	)
 	if err != nil {
 		switch {
@@ -127,5 +142,9 @@ func (h *MessageHandler) GetByConversationID(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": messages})
+	c.JSON(http.StatusOK, gin.H{
+		"data":        page.Messages,
+		"next_cursor": page.NextCursor,
+		"has_more":    page.HasMore,
+	})
 }

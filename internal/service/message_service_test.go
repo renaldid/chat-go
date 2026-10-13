@@ -32,28 +32,28 @@ func (m *mockMessageRepository) Create(
 func (m *mockMessageRepository) GetByConversationID(
 	ctx context.Context,
 	conversationID int64,
+	beforeID *int64,
 	limit int,
-	offset int,
 ) ([]model.Message, error) {
 	result := make([]model.Message, 0)
 
 	for _, message := range m.messages {
-		if message.ConversationID == conversationID {
-			result = append(result, message)
+		if message.ConversationID != conversationID {
+			continue
 		}
+
+		if beforeID != nil && message.ID >= *beforeID {
+			continue
+		}
+
+		result = append(result, message)
 	}
 
-	if offset >= len(result) {
-		return []model.Message{}, nil
+	if len(result) > limit {
+		result = result[len(result)-limit:]
 	}
 
-	end := offset + limit
-
-	if end > len(result) {
-		end = len(result)
-	}
-
-	return result[offset:end], nil
+	return result, nil
 }
 
 func TestMessageServiceCreate(t *testing.T) {
@@ -249,5 +249,110 @@ func TestMessageServiceCreateSenderNotMember(t *testing.T) {
 			"expected ErrSenderNotConversationMember, got %v",
 			err,
 		)
+	}
+}
+
+func TestMessageServiceGetByConversationIDPagination(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	conversationService := NewConversationService(
+		conversationRepo,
+		memberRepo,
+	)
+
+	user, err := userService.Create(
+		context.Background(),
+		"pagination-user",
+		"Pagination User",
+		"password123",
+	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	conversation, err := conversationService.Create(
+		context.Background(),
+		"Pagination Chat",
+		user.ID,
+	)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	svc := NewMessageService(
+		messageRepo,
+		conversationRepo,
+		userRepo,
+		memberRepo,
+	)
+
+	for _, content := range []string{"message 1", "message 2", "message 3"} {
+		_, err := svc.Create(
+			context.Background(),
+			conversation.ID,
+			user.ID,
+			content,
+		)
+		if err != nil {
+			t.Fatalf("create message: %v", err)
+		}
+	}
+
+	page1, err := svc.GetByConversationID(
+		context.Background(),
+		conversation.ID,
+		user.ID,
+		nil,
+		2,
+	)
+	if err != nil {
+		t.Fatalf("get first page: %v", err)
+	}
+
+	if len(page1.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(page1.Messages))
+	}
+
+	if page1.Messages[0].ID != 2 || page1.Messages[1].ID != 3 {
+		t.Fatalf("expected message ids 2 and 3")
+	}
+
+	if !page1.HasMore {
+		t.Fatal("expected first page to have more messages")
+	}
+
+	if page1.NextCursor == nil || *page1.NextCursor != 2 {
+		t.Fatal("expected next cursor 2")
+	}
+
+	page2, err := svc.GetByConversationID(
+		context.Background(),
+		conversation.ID,
+		user.ID,
+		page1.NextCursor,
+		2,
+	)
+	if err != nil {
+		t.Fatalf("get second page: %v", err)
+	}
+
+	if len(page2.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(page2.Messages))
+	}
+
+	if page2.Messages[0].ID != 1 {
+		t.Fatalf("expected message id 1, got %d", page2.Messages[0].ID)
+	}
+
+	if page2.HasMore {
+		t.Fatal("expected second page to have no more messages")
+	}
+
+	if page2.NextCursor != nil {
+		t.Fatal("expected next cursor to be nil")
 	}
 }

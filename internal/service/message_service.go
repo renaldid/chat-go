@@ -35,6 +35,12 @@ func NewMessageService(
 	}
 }
 
+type MessagePage struct {
+	Messages   []model.Message
+	NextCursor *int64
+	HasMore    bool
+}
+
 func (s *MessageService) Create(
 	ctx context.Context,
 	conversationID int64,
@@ -95,9 +101,9 @@ func (s *MessageService) GetByConversationID(
 	ctx context.Context,
 	conversationID int64,
 	userID int64,
+	beforeID *int64,
 	limit int,
-	offset int,
-) ([]model.Message, error) {
+) (*MessagePage, error) {
 	conversation, err := s.conversationRepository.GetByID(ctx, conversationID)
 	if err != nil {
 		return nil, err
@@ -107,7 +113,11 @@ func (s *MessageService) GetByConversationID(
 		return nil, ErrConversationNotFound
 	}
 
-	isMember, err := s.conversationMemberRepository.Exists(ctx, conversationID, userID)
+	isMember, err := s.conversationMemberRepository.Exists(
+		ctx,
+		conversationID,
+		userID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +134,32 @@ func (s *MessageService) GetByConversationID(
 		limit = 100
 	}
 
-	if offset < 0 {
-		offset = 0
+	messages, err := s.messageRepository.GetByConversationID(
+		ctx,
+		conversationID,
+		beforeID,
+		limit+1,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	return s.messageRepository.GetByConversationID(ctx, conversationID, limit, offset)
+	hasMore := len(messages) > limit
+
+	if hasMore {
+		messages = messages[1:]
+	}
+
+	var nextCursor *int64
+
+	if hasMore && len(messages) > 0 {
+		cursor := messages[0].ID
+		nextCursor = &cursor
+	}
+
+	return &MessagePage{
+		Messages:   messages,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+	}, nil
 }
