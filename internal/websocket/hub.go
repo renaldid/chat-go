@@ -132,3 +132,16 @@ func (h *Hub) OnlineUserIDs(conversationID int64) []int64 {
 
 	return result
 }
+
+func (h *Hub) ConversationIDs() []int64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	result := make([]int64, 0, len(h.rooms))
+
+	for conversationID := range h.rooms {
+		result = append(result, conversationID)
+	}
+
+	return result
+}

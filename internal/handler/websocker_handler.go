@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	gorilla "github.com/gorilla/websocket"
@@ -15,31 +18,12 @@ import (
 
 type WebSocketHandler struct {
 	hub                 *ws.Hub
+	broker              *ws.RedisBroker
+	presence            *ws.RedisPresence
 	messageService      *service.MessageService
 	conversationService *service.ConversationService
 	jwtManager          *auth.JWTManager
 	upgrader            gorilla.Upgrader
-}
-
-func NewWebSocketHandler(
-	hub *ws.Hub,
-	messageService *service.MessageService,
-	conversationService *service.ConversationService,
-	jwtManager *auth.JWTManager,
-	allowedOrigin string,
-) *WebSocketHandler {
-	return &WebSocketHandler{
-		hub:                 hub,
-		messageService:      messageService,
-		conversationService: conversationService,
-		jwtManager:          jwtManager,
-		upgrader: gorilla.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				origin := r.Header.Get("Origin")
-				return origin == "" || allowedOrigin == "*" || origin == allowedOrigin
-			},
-		},
-	}
 }
 
 type websocketRequest struct {
@@ -47,22 +31,56 @@ type websocketRequest struct {
 	Content string `json:"content,omitempty"`
 }
 
+func NewWebSocketHandler(
+	hub *ws.Hub,
+	broker *ws.RedisBroker,
+	presence *ws.RedisPresence,
+	messageService *service.MessageService,
+	conversationService *service.ConversationService,
+	jwtManager *auth.JWTManager,
+	allowedOrigin string,
+) *WebSocketHandler {
+	return &WebSocketHandler{
+		hub:                 hub,
+		broker:              broker,
+		presence:            presence,
+		messageService:      messageService,
+		conversationService: conversationService,
+		jwtManager:          jwtManager,
+		upgrader: gorilla.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+
+				return origin == "" ||
+					allowedOrigin == "*" ||
+					origin == allowedOrigin
+			},
+		},
+	}
+}
+
 func (h *WebSocketHandler) Connect(c *gin.Context) {
 	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || conversationID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid conversation id",
+		})
 		return
 	}
 
 	tokenString := c.Query("token")
 	if tokenString == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "access token is required"})
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "access token is required",
+		})
 		return
 	}
 
 	claims, err := h.jwtManager.Parse(tokenString)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid access token"})
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "invalid access token",
+		})
 		return
 	}
 
@@ -74,65 +92,180 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrConversationNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": service.ErrConversationNotFound.Error()})
+			c.JSON(
+				http.StatusNotFound,
+				gin.H{
+					"error": service.ErrConversationNotFound.Error(),
+				},
+			)
+
 		case errors.Is(err, service.ErrConversationAccessDenied):
-			c.JSON(http.StatusForbidden, gin.H{"error": service.ErrConversationAccessDenied.Error()})
+			c.JSON(
+				http.StatusForbidden,
+				gin.H{
+					"error": service.ErrConversationAccessDenied.Error(),
+				},
+			)
+
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+			c.JSON(
+				http.StatusInternalServerError,
+				gin.H{
+					"error": "internal server error",
+				},
+			)
 		}
+
 		return
 	}
 
-	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := h.upgrader.Upgrade(
+		c.Writer,
+		c.Request,
+		nil,
+	)
 	if err != nil {
 		return
 	}
 
-	client := ws.NewClient(conn, conversationID, claims.UserID)
+	client := ws.NewClient(
+		conn,
+		conversationID,
+		claims.UserID,
+	)
+
 	client.ConfigureReadDeadline()
 
-	firstConnection := h.hub.Register(client)
+	h.hub.Register(client)
+
+	becameOnline, err := h.presence.Register(
+		c.Request.Context(),
+		conversationID,
+		claims.UserID,
+	)
+	if err != nil {
+		h.hub.Unregister(client)
+		_ = conn.Close()
+
+		slog.Error(
+			"register redis presence",
+			"conversation_id", conversationID,
+			"user_id", claims.UserID,
+			"error", err,
+		)
+
+		return
+	}
 
 	defer func() {
-		lastConnection := h.hub.Unregister(client)
+		h.hub.Unregister(client)
 
-		if lastConnection {
-			h.hub.Broadcast(
-				conversationID,
-				ws.Event{
-					Type: "user_offline",
-					Data: map[string]any{
-						"conversation_id": conversationID,
-						"user_id":         claims.UserID,
-					},
-				},
+		cleanupCtx, cancel := context.WithTimeout(
+			context.Background(),
+			3*time.Second,
+		)
+		defer cancel()
+
+		becameOffline, err := h.presence.Unregister(
+			cleanupCtx,
+			conversationID,
+			claims.UserID,
+		)
+		if err != nil {
+			slog.Error(
+				"unregister redis presence",
+				"conversation_id", conversationID,
+				"user_id", claims.UserID,
+				"error", err,
+			)
+			return
+		}
+
+		if !becameOffline {
+			return
+		}
+
+		event := ws.Event{
+			Type: "user_offline",
+			Data: map[string]any{
+				"conversation_id": conversationID,
+				"user_id":         claims.UserID,
+			},
+		}
+
+		h.hub.Broadcast(
+			conversationID,
+			event,
+		)
+
+		if err := h.broker.Publish(
+			cleanupCtx,
+			conversationID,
+			event,
+		); err != nil {
+			slog.Error(
+				"publish user offline",
+				"conversation_id", conversationID,
+				"user_id", claims.UserID,
+				"error", err,
 			)
 		}
 	}()
 
 	go client.WritePump()
 
+	onlineUserIDs, err := h.presence.OnlineUserIDs(
+		c.Request.Context(),
+		conversationID,
+	)
+	if err != nil {
+		slog.Error(
+			"get redis online users",
+			"conversation_id", conversationID,
+			"error", err,
+		)
+
+		onlineUserIDs = h.hub.OnlineUserIDs(
+			conversationID,
+		)
+	}
+
 	client.SendEvent(ws.Event{
 		Type: "connected",
 		Data: map[string]any{
 			"conversation_id": conversationID,
 			"user_id":         claims.UserID,
-			"online_user_ids": h.hub.OnlineUserIDs(conversationID),
+			"online_user_ids": onlineUserIDs,
 		},
 	})
 
-	if firstConnection {
+	if becameOnline {
+		event := ws.Event{
+			Type: "user_online",
+			Data: map[string]any{
+				"conversation_id": conversationID,
+				"user_id":         claims.UserID,
+			},
+		}
+
 		h.hub.BroadcastExcept(
 			conversationID,
 			client,
-			ws.Event{
-				Type: "user_online",
-				Data: map[string]any{
-					"conversation_id": conversationID,
-					"user_id":         claims.UserID,
-				},
-			},
+			event,
 		)
+
+		if err := h.broker.Publish(
+			c.Request.Context(),
+			conversationID,
+			event,
+		); err != nil {
+			slog.Error(
+				"publish user online",
+				"conversation_id", conversationID,
+				"user_id", claims.UserID,
+				"error", err,
+			)
+		}
 	}
 
 	for {
@@ -144,13 +277,29 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 
 		switch req.Type {
 		case "", "message":
-			h.handleMessage(c, client, claims.UserID, conversationID, req.Content)
+			h.handleMessage(
+				c,
+				client,
+				claims.UserID,
+				conversationID,
+				req.Content,
+			)
 
 		case "typing_start":
-			h.handleTyping(client, claims.UserID, conversationID, true)
+			h.handleTyping(
+				client,
+				claims.UserID,
+				conversationID,
+				true,
+			)
 
 		case "typing_stop":
-			h.handleTyping(client, claims.UserID, conversationID, false)
+			h.handleTyping(
+				client,
+				claims.UserID,
+				conversationID,
+				false,
+			)
 
 		default:
 			client.SendEvent(ws.Event{
@@ -182,13 +331,28 @@ func (h *WebSocketHandler) handleMessage(
 		return
 	}
 
+	event := ws.Event{
+		Type: "message",
+		Data: message,
+	}
+
 	h.hub.Broadcast(
 		conversationID,
-		ws.Event{
-			Type: "message",
-			Data: message,
-		},
+		event,
 	)
+
+	if err := h.broker.Publish(
+		c.Request.Context(),
+		conversationID,
+		event,
+	); err != nil {
+		slog.Error(
+			"publish websocket message",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"error", err,
+		)
+	}
 }
 
 func (h *WebSocketHandler) handleTyping(
@@ -203,15 +367,36 @@ func (h *WebSocketHandler) handleTyping(
 		eventType = "typing_start"
 	}
 
+	event := ws.Event{
+		Type: eventType,
+		Data: map[string]any{
+			"conversation_id": conversationID,
+			"user_id":         userID,
+		},
+	}
+
 	h.hub.BroadcastExcept(
 		conversationID,
 		client,
-		ws.Event{
-			Type: eventType,
-			Data: map[string]any{
-				"conversation_id": conversationID,
-				"user_id":         userID,
-			},
-		},
+		event,
 	)
+
+	publishCtx, cancel := context.WithTimeout(
+		context.Background(),
+		2*time.Second,
+	)
+	defer cancel()
+
+	if err := h.broker.Publish(
+		publishCtx,
+		conversationID,
+		event,
+	); err != nil {
+		slog.Error(
+			"publish typing event",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"error", err,
+		)
+	}
 }
