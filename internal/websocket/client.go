@@ -2,8 +2,17 @@ package websocket
 
 import (
 	"encoding/json"
+	"log/slog"
+	"time"
 
 	gorilla "github.com/gorilla/websocket"
+)
+
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 64 * 1024
 )
 
 type Client struct {
@@ -22,12 +31,47 @@ func NewClient(conn *gorilla.Conn, conversationID int64, userID int64) *Client {
 	}
 }
 
-func (c *Client) WritePump() {
-	defer c.Conn.Close()
+func (c *Client) ConfigureReadDeadline() {
+	c.Conn.SetReadLimit(maxMessageSize)
+	_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.Conn.SetPongHandler(func(appData string) error {
+		slog.Info(
+			"websocket pong received",
+			"user_id", c.UserID,
+			"conversation_id", c.ConversationID,
+		)
 
-	for message := range c.Send {
-		if err := c.Conn.WriteMessage(gorilla.TextMessage, message); err != nil {
-			return
+		return c.Conn.SetReadDeadline(
+			time.Now().Add(pongWait),
+		)
+	})
+}
+
+func (c *Client) WritePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		_ = c.Conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.Send:
+			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				_ = c.Conn.WriteMessage(gorilla.CloseMessage, []byte{})
+				return
+			}
+
+			if err := c.Conn.WriteMessage(gorilla.TextMessage, message); err != nil {
+				return
+			}
+
+		case <-ticker.C:
+			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.Conn.WriteMessage(gorilla.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }

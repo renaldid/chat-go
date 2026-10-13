@@ -42,8 +42,9 @@ func NewWebSocketHandler(
 	}
 }
 
-type websocketMessageRequest struct {
-	Content string `json:"content"`
+type websocketRequest struct {
+	Type    string `json:"type"`
+	Content string `json:"content,omitempty"`
 }
 
 func (h *WebSocketHandler) Connect(c *gin.Context) {
@@ -88,8 +89,26 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 	}
 
 	client := ws.NewClient(conn, conversationID, claims.UserID)
-	h.hub.Register(client)
-	defer h.hub.Unregister(client)
+	client.ConfigureReadDeadline()
+
+	firstConnection := h.hub.Register(client)
+
+	defer func() {
+		lastConnection := h.hub.Unregister(client)
+
+		if lastConnection {
+			h.hub.Broadcast(
+				conversationID,
+				ws.Event{
+					Type: "user_offline",
+					Data: map[string]any{
+						"conversation_id": conversationID,
+						"user_id":         claims.UserID,
+					},
+				},
+			)
+		}
+	}()
 
 	go client.WritePump()
 
@@ -98,33 +117,101 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 		Data: map[string]any{
 			"conversation_id": conversationID,
 			"user_id":         claims.UserID,
+			"online_user_ids": h.hub.OnlineUserIDs(conversationID),
 		},
 	})
 
+	if firstConnection {
+		h.hub.BroadcastExcept(
+			conversationID,
+			client,
+			ws.Event{
+				Type: "user_online",
+				Data: map[string]any{
+					"conversation_id": conversationID,
+					"user_id":         claims.UserID,
+				},
+			},
+		)
+	}
+
 	for {
-		var req websocketMessageRequest
+		var req websocketRequest
 
 		if err := conn.ReadJSON(&req); err != nil {
 			return
 		}
 
-		message, err := h.messageService.Create(
-			c.Request.Context(),
-			conversationID,
-			claims.UserID,
-			req.Content,
-		)
-		if err != nil {
+		switch req.Type {
+		case "", "message":
+			h.handleMessage(c, client, claims.UserID, conversationID, req.Content)
+
+		case "typing_start":
+			h.handleTyping(client, claims.UserID, conversationID, true)
+
+		case "typing_stop":
+			h.handleTyping(client, claims.UserID, conversationID, false)
+
+		default:
 			client.SendEvent(ws.Event{
 				Type:  "error",
-				Error: err.Error(),
+				Error: "unsupported event type",
 			})
-			continue
 		}
+	}
+}
 
-		h.hub.Broadcast(conversationID, ws.Event{
+func (h *WebSocketHandler) handleMessage(
+	c *gin.Context,
+	client *ws.Client,
+	userID int64,
+	conversationID int64,
+	content string,
+) {
+	message, err := h.messageService.Create(
+		c.Request.Context(),
+		conversationID,
+		userID,
+		content,
+	)
+	if err != nil {
+		client.SendEvent(ws.Event{
+			Type:  "error",
+			Error: err.Error(),
+		})
+		return
+	}
+
+	h.hub.Broadcast(
+		conversationID,
+		ws.Event{
 			Type: "message",
 			Data: message,
-		})
+		},
+	)
+}
+
+func (h *WebSocketHandler) handleTyping(
+	client *ws.Client,
+	userID int64,
+	conversationID int64,
+	isTyping bool,
+) {
+	eventType := "typing_stop"
+
+	if isTyping {
+		eventType = "typing_start"
 	}
+
+	h.hub.BroadcastExcept(
+		conversationID,
+		client,
+		ws.Event{
+			Type: eventType,
+			Data: map[string]any{
+				"conversation_id": conversationID,
+				"user_id":         userID,
+			},
+		},
+	)
 }
