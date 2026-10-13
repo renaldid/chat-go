@@ -14,28 +14,25 @@ import (
 )
 
 type WebSocketHandler struct {
-	hub                       *ws.Hub
-	messageService            *service.MessageService
-	conversationService       *service.ConversationService
-	conversationMemberService *service.ConversationMemberService
-	jwtManager                *auth.JWTManager
-	upgrader                  gorilla.Upgrader
+	hub                 *ws.Hub
+	messageService      *service.MessageService
+	conversationService *service.ConversationService
+	jwtManager          *auth.JWTManager
+	upgrader            gorilla.Upgrader
 }
 
 func NewWebSocketHandler(
 	hub *ws.Hub,
 	messageService *service.MessageService,
 	conversationService *service.ConversationService,
-	conversationMemberService *service.ConversationMemberService,
 	jwtManager *auth.JWTManager,
 	allowedOrigin string,
 ) *WebSocketHandler {
 	return &WebSocketHandler{
-		hub:                       hub,
-		messageService:            messageService,
-		conversationService:       conversationService,
-		conversationMemberService: conversationMemberService,
-		jwtManager:                jwtManager,
+		hub:                 hub,
+		messageService:      messageService,
+		conversationService: conversationService,
+		jwtManager:          jwtManager,
 		upgrader: gorilla.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -68,25 +65,20 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 		return
 	}
 
-	_, err = h.conversationService.GetByID(c.Request.Context(), conversationID)
+	_, err = h.conversationService.GetByID(
+		c.Request.Context(),
+		conversationID,
+		claims.UserID,
+	)
 	if err != nil {
-		if errors.Is(err, service.ErrConversationNotFound) {
+		switch {
+		case errors.Is(err, service.ErrConversationNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": service.ErrConversationNotFound.Error()})
-			return
+		case errors.Is(err, service.ErrConversationAccessDenied):
+			c.JSON(http.StatusForbidden, gin.H{"error": service.ErrConversationAccessDenied.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
-	}
-
-	isMember, err := h.conversationMemberService.IsMember(c.Request.Context(), conversationID, claims.UserID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
-	}
-
-	if !isMember {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user is not a conversation member"})
 		return
 	}
 

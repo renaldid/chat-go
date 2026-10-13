@@ -93,11 +93,15 @@ func (h *MessageHandler) Create(c *gin.Context) {
 }
 
 func (h *MessageHandler) GetByConversationID(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || conversationID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid conversation id",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
 		return
 	}
 
@@ -107,24 +111,21 @@ func (h *MessageHandler) GetByConversationID(c *gin.Context) {
 	messages, err := h.messageService.GetByConversationID(
 		c.Request.Context(),
 		conversationID,
+		userID,
 		limit,
 		offset,
 	)
 	if err != nil {
-		if errors.Is(err, service.ErrConversationNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": service.ErrConversationNotFound.Error(),
-			})
-			return
+		switch {
+		case errors.Is(err, service.ErrConversationNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": service.ErrConversationNotFound.Error()})
+		case errors.Is(err, service.ErrConversationAccessDenied):
+			c.JSON(http.StatusForbidden, gin.H{"error": service.ErrConversationAccessDenied.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "internal server error",
-		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": messages,
-	})
+	c.JSON(http.StatusOK, gin.H{"data": messages})
 }

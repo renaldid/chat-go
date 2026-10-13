@@ -53,7 +53,10 @@ func TestConversationMemberServiceAdd(t *testing.T) {
 	memberRepo := newMockConversationMemberRepository()
 
 	userService := NewUserService(userRepo)
-	conversationService := NewConversationService(conversationRepo)
+	conversationService := NewConversationService(
+		conversationRepo,
+		memberRepo,
+	)
 
 	user, err := userService.Create(
 		context.Background(),
@@ -68,6 +71,7 @@ func TestConversationMemberServiceAdd(t *testing.T) {
 	conversation, err := conversationService.Create(
 		context.Background(),
 		"General Chat",
+		999,
 	)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
@@ -81,6 +85,7 @@ func TestConversationMemberServiceAdd(t *testing.T) {
 
 	member, err := svc.Add(
 		context.Background(),
+		999,
 		conversation.ID,
 		user.ID,
 	)
@@ -111,19 +116,29 @@ func TestConversationMemberServiceAddDuplicate(t *testing.T) {
 	memberRepo := newMockConversationMemberRepository()
 
 	userService := NewUserService(userRepo)
-	conversationService := NewConversationService(conversationRepo)
+	conversationService := NewConversationService(
+		conversationRepo,
+		memberRepo,
+	)
 
-	user, _ := userService.Create(
+	user, err := userService.Create(
 		context.Background(),
 		"renaldid",
 		"Renaldi",
 		"password123",
 	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
 
-	conversation, _ := conversationService.Create(
+	conversation, err := conversationService.Create(
 		context.Background(),
 		"General Chat",
+		999,
 	)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
 
 	svc := NewConversationMemberService(
 		conversationRepo,
@@ -131,8 +146,9 @@ func TestConversationMemberServiceAddDuplicate(t *testing.T) {
 		memberRepo,
 	)
 
-	_, err := svc.Add(
+	_, err = svc.Add(
 		context.Background(),
+		999,
 		conversation.ID,
 		user.ID,
 	)
@@ -142,6 +158,7 @@ func TestConversationMemberServiceAddDuplicate(t *testing.T) {
 
 	_, err = svc.Add(
 		context.Background(),
+		999,
 		conversation.ID,
 		user.ID,
 	)
@@ -167,6 +184,7 @@ func TestConversationMemberServiceConversationNotFound(t *testing.T) {
 
 	_, err := svc.Add(
 		context.Background(),
+		1,
 		999,
 		1,
 	)
@@ -184,12 +202,19 @@ func TestConversationMemberServiceUserNotFound(t *testing.T) {
 	conversationRepo := newMockConversationRepository()
 	memberRepo := newMockConversationMemberRepository()
 
-	conversationService := NewConversationService(conversationRepo)
+	conversationService := NewConversationService(
+		conversationRepo,
+		memberRepo,
+	)
 
-	conversation, _ := conversationService.Create(
+	conversation, err := conversationService.Create(
 		context.Background(),
 		"General Chat",
+		1,
 	)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
 
 	svc := NewConversationMemberService(
 		conversationRepo,
@@ -197,8 +222,9 @@ func TestConversationMemberServiceUserNotFound(t *testing.T) {
 		memberRepo,
 	)
 
-	_, err := svc.Add(
+	_, err = svc.Add(
 		context.Background(),
+		1,
 		conversation.ID,
 		999,
 	)

@@ -63,7 +63,7 @@ func TestMessageServiceCreate(t *testing.T) {
 	messageRepo := newMockMessageRepository()
 
 	userService := NewUserService(userRepo)
-	conversationService := NewConversationService(conversationRepo)
+	conversationService := NewConversationService(conversationRepo, memberRepo)
 
 	user, err := userService.Create(
 		context.Background(),
@@ -78,24 +78,10 @@ func TestMessageServiceCreate(t *testing.T) {
 	conversation, err := conversationService.Create(
 		context.Background(),
 		"General Chat",
+		1,
 	)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
-	}
-
-	memberService := NewConversationMemberService(
-		conversationRepo,
-		userRepo,
-		memberRepo,
-	)
-
-	_, err = memberService.Add(
-		context.Background(),
-		conversation.ID,
-		user.ID,
-	)
-	if err != nil {
-		t.Fatalf("add member: %v", err)
 	}
 
 	svc := NewMessageService(
@@ -174,22 +160,32 @@ func TestMessageServiceCreateConversationNotFound(t *testing.T) {
 }
 
 func TestMessageServiceCreateUserNotFound(t *testing.T) {
+	userRepo := newMockUserRepository()
 	conversationRepo := newMockConversationRepository()
-	conversationService := NewConversationService(conversationRepo)
+	memberRepo := newMockConversationMemberRepository()
 
-	conversation, _ := conversationService.Create(
+	conversationService := NewConversationService(
+		conversationRepo,
+		memberRepo,
+	)
+
+	conversation, err := conversationService.Create(
 		context.Background(),
 		"General Chat",
+		1,
 	)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
 
 	svc := NewMessageService(
 		newMockMessageRepository(),
 		conversationRepo,
-		newMockUserRepository(),
-		newMockConversationMemberRepository(),
+		userRepo,
+		memberRepo,
 	)
 
-	_, err := svc.Create(
+	_, err = svc.Create(
 		context.Background(),
 		conversation.ID,
 		999,
@@ -207,30 +203,41 @@ func TestMessageServiceCreateUserNotFound(t *testing.T) {
 func TestMessageServiceCreateSenderNotMember(t *testing.T) {
 	userRepo := newMockUserRepository()
 	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
 
 	userService := NewUserService(userRepo)
-	conversationService := NewConversationService(conversationRepo)
+	conversationService := NewConversationService(
+		conversationRepo,
+		memberRepo,
+	)
 
-	user, _ := userService.Create(
+	user, err := userService.Create(
 		context.Background(),
 		"renaldid",
 		"Renaldi",
 		"password123",
 	)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
 
-	conversation, _ := conversationService.Create(
+	conversation, err := conversationService.Create(
 		context.Background(),
 		"General Chat",
+		999,
 	)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
 
 	svc := NewMessageService(
 		newMockMessageRepository(),
 		conversationRepo,
 		userRepo,
-		newMockConversationMemberRepository(),
+		memberRepo,
 	)
 
-	_, err := svc.Create(
+	_, err = svc.Create(
 		context.Background(),
 		conversation.ID,
 		user.ID,

@@ -8,9 +8,7 @@ import (
 	"github.com/renaldid/chat-go/internal/repository"
 )
 
-var (
-	ErrConversationMemberExists = errors.New("user already joined conversation")
-)
+var ErrConversationMemberExists = errors.New("user already joined conversation")
 
 type ConversationMemberService struct {
 	conversationRepository       repository.ConversationRepository
@@ -30,11 +28,7 @@ func NewConversationMemberService(
 	}
 }
 
-func (s *ConversationMemberService) Add(
-	ctx context.Context,
-	conversationID int64,
-	userID int64,
-) (*model.ConversationMember, error) {
+func (s *ConversationMemberService) Add(ctx context.Context, requesterID int64, conversationID int64, userID int64) (*model.ConversationMember, error) {
 	conversation, err := s.conversationRepository.GetByID(ctx, conversationID)
 	if err != nil {
 		return nil, err
@@ -42,6 +36,15 @@ func (s *ConversationMemberService) Add(
 
 	if conversation == nil {
 		return nil, ErrConversationNotFound
+	}
+
+	requesterIsMember, err := s.conversationMemberRepository.Exists(ctx, conversationID, requesterID)
+	if err != nil {
+		return nil, err
+	}
+
+	if !requesterIsMember {
+		return nil, ErrConversationAccessDenied
 	}
 
 	user, err := s.userRepository.GetByID(ctx, userID)
@@ -53,11 +56,7 @@ func (s *ConversationMemberService) Add(
 		return nil, ErrUserNotFound
 	}
 
-	exists, err := s.conversationMemberRepository.Exists(
-		ctx,
-		conversationID,
-		userID,
-	)
+	exists, err := s.conversationMemberRepository.Exists(ctx, conversationID, userID)
 	if err != nil {
 		return nil, err
 	}

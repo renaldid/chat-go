@@ -28,10 +28,14 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	authHandler := NewAuthHandler(authService)
 
 	conversationRepository := repository.NewConversationRepositoryPostgres(db)
-	conversationService := service.NewConversationService(conversationRepository)
+	conversationMemberRepository := repository.NewConversationMemberRepositoryPostgres(db)
+
+	conversationService := service.NewConversationService(
+		conversationRepository,
+		conversationMemberRepository,
+	)
 	conversationHandler := NewConversationHandler(conversationService)
 
-	conversationMemberRepository := repository.NewConversationMemberRepositoryPostgres(db)
 	conversationMemberService := service.NewConversationMemberService(
 		conversationRepository,
 		userRepository,
@@ -53,7 +57,6 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 		websocketHub,
 		messageService,
 		conversationService,
-		conversationMemberService,
 		jwtManager,
 		cfg.WSAllowedOrigin,
 	)
@@ -72,11 +75,13 @@ func NewRouter(db *pgxpool.Pool, cfg config.Config) *gin.Engine {
 	}
 
 	conversations := r.Group("/conversations")
+	conversations.Use(AuthMiddleware(jwtManager))
 	{
 		conversations.POST("", conversationHandler.Create)
+		conversations.GET("", conversationHandler.List)
 		conversations.GET("/:id", conversationHandler.GetByID)
 		conversations.POST("/:id/members", conversationMemberHandler.Add)
-		conversations.POST("/:id/messages", AuthMiddleware(jwtManager), messageHandler.Create)
+		conversations.POST("/:id/messages", messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
 	}
 

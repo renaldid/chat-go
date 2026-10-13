@@ -94,6 +94,7 @@ func (s *MessageService) Create(
 func (s *MessageService) GetByConversationID(
 	ctx context.Context,
 	conversationID int64,
+	userID int64,
 	limit int,
 	offset int,
 ) ([]model.Message, error) {
@@ -104,6 +105,15 @@ func (s *MessageService) GetByConversationID(
 
 	if conversation == nil {
 		return nil, ErrConversationNotFound
+	}
+
+	isMember, err := s.conversationMemberRepository.Exists(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isMember {
+		return nil, ErrConversationAccessDenied
 	}
 
 	if limit <= 0 {
@@ -118,10 +128,5 @@ func (s *MessageService) GetByConversationID(
 		offset = 0
 	}
 
-	return s.messageRepository.GetByConversationID(
-		ctx,
-		conversationID,
-		limit,
-		offset,
-	)
+	return s.messageRepository.GetByConversationID(ctx, conversationID, limit, offset)
 }

@@ -18,36 +18,45 @@ func newMockConversationRepository() *mockConversationRepository {
 	}
 }
 
-func (m *mockConversationRepository) Create(
-	ctx context.Context,
-	conversation *model.Conversation,
-) error {
+func (m *mockConversationRepository) Create(ctx context.Context, conversation *model.Conversation) error {
 	conversation.ID = int64(len(m.conversations) + 1)
 	m.conversations[conversation.ID] = conversation
-
 	return nil
 }
 
-func (m *mockConversationRepository) GetByID(
-	ctx context.Context,
-	id int64,
-) (*model.Conversation, error) {
+func (m *mockConversationRepository) GetByID(ctx context.Context, id int64) (*model.Conversation, error) {
 	conversation, ok := m.conversations[id]
 	if !ok {
 		return nil, nil
 	}
-
 	return conversation, nil
+}
+
+func (m *mockConversationRepository) ListByUserID(ctx context.Context, userID int64, limit int, offset int) ([]model.Conversation, error) {
+	result := make([]model.Conversation, 0)
+
+	for _, conversation := range m.conversations {
+		result = append(result, *conversation)
+	}
+
+	if offset >= len(result) {
+		return []model.Conversation{}, nil
+	}
+
+	end := offset + limit
+	if end > len(result) {
+		end = len(result)
+	}
+
+	return result[offset:end], nil
 }
 
 func TestConversationServiceCreate(t *testing.T) {
 	repo := newMockConversationRepository()
-	svc := NewConversationService(repo)
+	memberRepo := newMockConversationMemberRepository()
+	svc := NewConversationService(repo, memberRepo)
 
-	conversation, err := svc.Create(
-		context.Background(),
-		"General Chat",
-	)
+	conversation, err := svc.Create(context.Background(), "General Chat", 1)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -56,73 +65,71 @@ func TestConversationServiceCreate(t *testing.T) {
 		t.Fatalf("expected conversation id 1, got %d", conversation.ID)
 	}
 
-	if conversation.Title != "General Chat" {
-		t.Fatalf(
-			"expected title General Chat, got %s",
-			conversation.Title,
-		)
+	exists, _ := memberRepo.Exists(context.Background(), conversation.ID, 1)
+	if !exists {
+		t.Fatal("expected creator to become conversation member")
 	}
 }
 
 func TestConversationServiceCreateTitleRequired(t *testing.T) {
-	repo := newMockConversationRepository()
-	svc := NewConversationService(repo)
-
-	_, err := svc.Create(
-		context.Background(),
-		"",
+	svc := NewConversationService(
+		newMockConversationRepository(),
+		newMockConversationMemberRepository(),
 	)
 
+	_, err := svc.Create(context.Background(), "", 1)
+
 	if !errors.Is(err, ErrConversationTitleRequired) {
-		t.Fatalf(
-			"expected ErrConversationTitleRequired, got %v",
-			err,
-		)
+		t.Fatalf("expected ErrConversationTitleRequired, got %v", err)
 	}
 }
 
 func TestConversationServiceGetByID(t *testing.T) {
 	repo := newMockConversationRepository()
-	svc := NewConversationService(repo)
+	memberRepo := newMockConversationMemberRepository()
+	svc := NewConversationService(repo, memberRepo)
 
-	created, err := svc.Create(
-		context.Background(),
-		"General Chat",
-	)
+	created, err := svc.Create(context.Background(), "General Chat", 1)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
 
-	conversation, err := svc.GetByID(
-		context.Background(),
-		created.ID,
-	)
+	conversation, err := svc.GetByID(context.Background(), created.ID, 1)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
 	if conversation.ID != created.ID {
-		t.Fatalf(
-			"expected conversation id %d, got %d",
-			created.ID,
-			conversation.ID,
-		)
+		t.Fatalf("expected conversation id %d, got %d", created.ID, conversation.ID)
+	}
+}
+
+func TestConversationServiceGetByIDAccessDenied(t *testing.T) {
+	repo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	svc := NewConversationService(repo, memberRepo)
+
+	created, err := svc.Create(context.Background(), "General Chat", 1)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	_, err = svc.GetByID(context.Background(), created.ID, 2)
+
+	if !errors.Is(err, ErrConversationAccessDenied) {
+		t.Fatalf("expected ErrConversationAccessDenied, got %v", err)
 	}
 }
 
 func TestConversationServiceGetByIDNotFound(t *testing.T) {
-	repo := newMockConversationRepository()
-	svc := NewConversationService(repo)
-
-	_, err := svc.GetByID(
-		context.Background(),
-		999,
+	svc := NewConversationService(
+		newMockConversationRepository(),
+		newMockConversationMemberRepository(),
 	)
 
+	_, err := svc.GetByID(context.Background(), 999, 1)
+
 	if !errors.Is(err, ErrConversationNotFound) {
-		t.Fatalf(
-			"expected ErrConversationNotFound, got %v",
-			err,
-		)
+		t.Fatalf("expected ErrConversationNotFound, got %v", err)
 	}
 }
