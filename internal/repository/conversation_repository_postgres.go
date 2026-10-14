@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -106,73 +107,134 @@ func (r *ConversationRepositoryPostgres) ListByUserID(ctx context.Context, userI
 			c.id,
 			c.type,
 			c.title,
+			CASE
+				WHEN c.type = 'direct' THEN COALESCE(du.display_name, du.username, 'Direct Chat')
+				ELSE c.title
+			END AS display_title,
 			c.created_at,
 			c.updated_at,
 			(
 				SELECT COUNT(*)
 				FROM messages m
 				WHERE m.conversation_id = c.id
-				  AND m.id > COALESCE(
-					  cm.last_read_message_id,
-					  0
-				  )
+				  AND m.id > COALESCE(cm.last_read_message_id, 0)
 				  AND m.sender_id <> cm.user_id
-			) AS unread_count
+			) AS unread_count,
+			(
+				SELECT COUNT(*)
+				FROM conversation_members cm2
+				WHERE cm2.conversation_id = c.id
+			) AS member_count,
+			du.id,
+			du.username,
+			du.display_name,
+			lm.id,
+			lm.sender_id,
+			lm.sender_username,
+			lm.sender_display_name,
+			lm.content,
+			lm.created_at
 		FROM conversations c
 		INNER JOIN conversation_members cm
 			ON cm.conversation_id = c.id
+		LEFT JOIN direct_conversations dc
+			ON dc.conversation_id = c.id
+		   AND c.type = 'direct'
+		LEFT JOIN users du
+			ON du.id = CASE
+				WHEN dc.user_low_id = $1 THEN dc.user_high_id
+				WHEN dc.user_high_id = $1 THEN dc.user_low_id
+			END
+		LEFT JOIN LATERAL (
+			SELECT
+				m.id,
+				m.sender_id,
+				u.username AS sender_username,
+				u.display_name AS sender_display_name,
+				m.content,
+				m.created_at
+			FROM messages m
+			INNER JOIN users u
+				ON u.id = m.sender_id
+			WHERE m.conversation_id = c.id
+			ORDER BY m.id DESC
+			LIMIT 1
+		) lm ON TRUE
 		WHERE cm.user_id = $1
-		ORDER BY
-			c.updated_at DESC,
-			c.id DESC
-		LIMIT $2
-		OFFSET $3
+		ORDER BY c.updated_at DESC, c.id DESC
+		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.Query(
-		ctx,
-		query,
-		userID,
-		limit,
-		offset,
-	)
+	rows, err := r.db.Query(ctx, query, userID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"list conversations by user id: %w",
-			err,
-		)
+		return nil, fmt.Errorf("list conversations by user id: %w", err)
 	}
 	defer rows.Close()
 
 	conversations := make([]model.ConversationSummary, 0)
+
 	for rows.Next() {
-		var conversation model.ConversationSummary
+		var (
+			conversation          model.ConversationSummary
+			directUserID          sql.NullInt64
+			directUsername        sql.NullString
+			directDisplayName     sql.NullString
+			lastMessageID         sql.NullInt64
+			lastSenderID          sql.NullInt64
+			lastSenderUsername    sql.NullString
+			lastSenderDisplayName sql.NullString
+			lastMessageContent    sql.NullString
+			lastMessageCreatedAt  sql.NullTime
+		)
 
 		if err := rows.Scan(
 			&conversation.ID,
 			&conversation.Type,
 			&conversation.Title,
+			&conversation.DisplayTitle,
 			&conversation.CreatedAt,
 			&conversation.UpdatedAt,
 			&conversation.UnreadCount,
+			&conversation.MemberCount,
+			&directUserID,
+			&directUsername,
+			&directDisplayName,
+			&lastMessageID,
+			&lastSenderID,
+			&lastSenderUsername,
+			&lastSenderDisplayName,
+			&lastMessageContent,
+			&lastMessageCreatedAt,
 		); err != nil {
-			return nil, fmt.Errorf(
-				"scan conversation: %w",
-				err,
-			)
+			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 
-		conversations = append(
-			conversations,
-			conversation,
-		)
+		if directUserID.Valid {
+			conversation.DirectUser = &model.ConversationUserSummary{
+				ID:          directUserID.Int64,
+				Username:    directUsername.String,
+				DisplayName: directDisplayName.String,
+			}
+		}
+
+		if lastMessageID.Valid {
+			conversation.LastMessage = &model.ConversationLastMessage{
+				ID: lastMessageID.Int64,
+				Sender: model.ConversationUserSummary{
+					ID:          lastSenderID.Int64,
+					Username:    lastSenderUsername.String,
+					DisplayName: lastSenderDisplayName.String,
+				},
+				Content:   lastMessageContent.String,
+				CreatedAt: lastMessageCreatedAt.Time,
+			}
+		}
+
+		conversations = append(conversations, conversation)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(
-			"iterate conversations: %w",
-			err,
-		)
+		return nil, fmt.Errorf("iterate conversations: %w", err)
 	}
 
 	return conversations, nil
