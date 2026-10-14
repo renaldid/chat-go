@@ -12,6 +12,8 @@ import (
 var (
 	ErrMessageContentRequired      = errors.New("message content is required")
 	ErrSenderNotConversationMember = errors.New("sender is not a conversation member")
+	ErrMessagePermissionDenied     = errors.New("message permission denied")
+	ErrMessageCannotEditDeleted    = errors.New("deleted message cannot be edited")
 )
 
 type MessageService struct {
@@ -41,12 +43,7 @@ type MessagePage struct {
 	HasMore    bool
 }
 
-func (s *MessageService) Create(
-	ctx context.Context,
-	conversationID int64,
-	senderID int64,
-	content string,
-) (*model.Message, error) {
+func (s *MessageService) Create(ctx context.Context, conversationID int64, senderID int64, content string) (*model.Message, error) {
 	content = strings.TrimSpace(content)
 
 	if content == "" {
@@ -97,13 +94,7 @@ func (s *MessageService) Create(
 	return message, nil
 }
 
-func (s *MessageService) GetByConversationID(
-	ctx context.Context,
-	conversationID int64,
-	userID int64,
-	beforeID *int64,
-	limit int,
-) (*MessagePage, error) {
+func (s *MessageService) GetByConversationID(ctx context.Context, conversationID int64, userID int64, beforeID *int64, limit int) (*MessagePage, error) {
 	conversation, err := s.conversationRepository.GetByID(ctx, conversationID)
 	if err != nil {
 		return nil, err
@@ -162,4 +153,92 @@ func (s *MessageService) GetByConversationID(
 		NextCursor: nextCursor,
 		HasMore:    hasMore,
 	}, nil
+}
+
+func (s *MessageService) Update(ctx context.Context, conversationID int64, userID int64, messageID int64, content string) (*model.Message, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, ErrMessageContentRequired
+	}
+
+	message, err := s.messageForMutation(ctx, conversationID, userID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	if message.DeletedAt != nil {
+		return nil, ErrMessageCannotEditDeleted
+	}
+
+	updated, err := s.messageRepository.UpdateContent(ctx, messageID, content)
+	if err != nil {
+		return nil, err
+	}
+	if updated == nil {
+		return nil, ErrMessageCannotEditDeleted
+	}
+
+	return updated, nil
+}
+
+func (s *MessageService) Delete(ctx context.Context, conversationID int64, userID int64, messageID int64) (*model.Message, bool, error) {
+	message, err := s.messageForMutation(ctx, conversationID, userID, messageID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if message.DeletedAt != nil {
+		return message, false, nil
+	}
+
+	deleted, err := s.messageRepository.SoftDelete(ctx, messageID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if deleted == nil {
+		current, err := s.messageRepository.GetByID(ctx, messageID)
+		if err != nil {
+			return nil, false, err
+		}
+		if current != nil && current.DeletedAt != nil {
+			return current, false, nil
+		}
+		return nil, false, ErrMessageNotFound
+	}
+
+	return deleted, true, nil
+}
+
+func (s *MessageService) messageForMutation(ctx context.Context, conversationID int64, userID int64, messageID int64) (*model.Message, error) {
+	conversation, err := s.conversationRepository.GetByID(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if conversation == nil {
+		return nil, ErrConversationNotFound
+	}
+
+	isMember, err := s.conversationMemberRepository.Exists(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, ErrConversationAccessDenied
+	}
+
+	message, err := s.messageRepository.GetByID(ctx, messageID)
+	if err != nil {
+		return nil, err
+	}
+	if message == nil {
+		return nil, ErrMessageNotFound
+	}
+	if message.ConversationID != conversationID {
+		return nil, ErrMessageNotInConversation
+	}
+	if message.SenderID != userID {
+		return nil, ErrMessagePermissionDenied
+	}
+
+	return message, nil
 }

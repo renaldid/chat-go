@@ -39,4 +39,6 @@ type ConversationLastMessage struct {
 	Sender    ConversationUserSummary `json:"sender"`
 	Content   string                  `json:"content"`
 	CreatedAt time.Time               `json:"created_at"`
+	EditedAt  *time.Time              `json:"edited_at,omitempty"`
+	DeletedAt *time.Time              `json:"deleted_at,omitempty"`
 }

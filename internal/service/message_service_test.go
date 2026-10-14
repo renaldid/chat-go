@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/renaldid/chat-go/internal/model"
 )
@@ -62,6 +63,40 @@ func (m *mockMessageRepository) GetByID(
 ) (*model.Message, error) {
 	for i := range m.messages {
 		if m.messages[i].ID == id {
+			return &m.messages[i], nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (m *mockMessageRepository) UpdateContent(ctx context.Context, id int64, content string) (*model.Message, error) {
+	for i := range m.messages {
+		if m.messages[i].ID == id {
+			if m.messages[i].DeletedAt != nil {
+				return nil, nil
+			}
+
+			now := time.Now()
+			m.messages[i].Content = content
+			m.messages[i].EditedAt = &now
+			return &m.messages[i], nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (m *mockMessageRepository) SoftDelete(ctx context.Context, id int64) (*model.Message, error) {
+	for i := range m.messages {
+		if m.messages[i].ID == id {
+			if m.messages[i].DeletedAt != nil {
+				return nil, nil
+			}
+
+			now := time.Now()
+			m.messages[i].Content = ""
+			m.messages[i].DeletedAt = &now
 			return &m.messages[i], nil
 		}
 	}
@@ -367,5 +402,113 @@ func TestMessageServiceGetByConversationIDPagination(t *testing.T) {
 
 	if page2.NextCursor != nil {
 		t.Fatal("expected next cursor to be nil")
+	}
+}
+
+func TestMessageServiceUpdate(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	user, err := userService.Create(context.Background(), "editor", "Editor", "password123")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	conversationService := NewConversationService(conversationRepo, memberRepo)
+	conversation, err := conversationService.Create(context.Background(), "Edit Test", user.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	svc := NewMessageService(messageRepo, conversationRepo, userRepo, memberRepo)
+
+	message, err := svc.Create(context.Background(), conversation.ID, user.ID, "before edit")
+	if err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	updated, err := svc.Update(context.Background(), conversation.ID, user.ID, message.ID, "after edit")
+	if err != nil {
+		t.Fatalf("update message: %v", err)
+	}
+
+	if updated.Content != "after edit" {
+		t.Fatalf("expected after edit, got %s", updated.Content)
+	}
+
+	if updated.EditedAt == nil {
+		t.Fatal("expected edited_at")
+	}
+}
+
+func TestMessageServiceUpdatePermissionDenied(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	user1, _ := userService.Create(context.Background(), "sender", "Sender", "password123")
+	user2, _ := userService.Create(context.Background(), "other", "Other", "password123")
+
+	conversationService := NewConversationService(conversationRepo, memberRepo)
+	conversation, _ := conversationService.Create(context.Background(), "Edit Test", user1.ID)
+
+	err := memberRepo.Add(context.Background(), &model.ConversationMember{
+		ConversationID: conversation.ID,
+		UserID:         user2.ID,
+		Role:           model.ConversationRoleMember,
+	})
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	svc := NewMessageService(messageRepo, conversationRepo, userRepo, memberRepo)
+	message, _ := svc.Create(context.Background(), conversation.ID, user1.ID, "hello")
+
+	_, err = svc.Update(context.Background(), conversation.ID, user2.ID, message.ID, "hacked")
+	if !errors.Is(err, ErrMessagePermissionDenied) {
+		t.Fatalf("expected ErrMessagePermissionDenied, got %v", err)
+	}
+}
+
+func TestMessageServiceDelete(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	user, _ := userService.Create(context.Background(), "deleter", "Deleter", "password123")
+
+	conversationService := NewConversationService(conversationRepo, memberRepo)
+	conversation, _ := conversationService.Create(context.Background(), "Delete Test", user.ID)
+
+	svc := NewMessageService(messageRepo, conversationRepo, userRepo, memberRepo)
+	message, _ := svc.Create(context.Background(), conversation.ID, user.ID, "delete me")
+
+	deleted, changed, err := svc.Delete(context.Background(), conversation.ID, user.ID, message.ID)
+	if err != nil {
+		t.Fatalf("delete message: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected first delete to change message")
+	}
+	if deleted.DeletedAt == nil {
+		t.Fatal("expected deleted_at")
+	}
+	if deleted.Content != "" {
+		t.Fatal("expected deleted message content to be empty")
+	}
+
+	_, changed, err = svc.Delete(context.Background(), conversation.ID, user.ID, message.ID)
+	if err != nil {
+		t.Fatalf("delete second time: %v", err)
+	}
+	if changed {
+		t.Fatal("expected second delete to be idempotent")
 	}
 }

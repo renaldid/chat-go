@@ -17,32 +17,43 @@ import (
 
 func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client, cfg config.Config) *gin.Engine {
 	router := gin.New()
-
-	router.Use(
-		RequestLogger(),
-		gin.Recovery(),
-	)
+	router.Use(RequestLogger(), gin.Recovery())
 
 	userRepository := repository.NewUserRepositoryPostgres(db)
 	conversationRepository := repository.NewConversationRepositoryPostgres(db)
 	directConversationRepository := repository.NewDirectConversationRepositoryPostgres(db)
 	conversationMemberRepository := repository.NewConversationMemberRepositoryPostgres(db)
-	messageRepository := repository.NewMessageRepositoryPostgres(db)
 	groupConversationRepository := repository.NewGroupConversationRepositoryPostgres(db)
+	messageRepository := repository.NewMessageRepositoryPostgres(db)
+
 	jwtManager := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiration)
 
 	userService := service.NewUserService(userRepository)
 	authService := service.NewAuthService(userRepository, jwtManager)
 	conversationService := service.NewConversationService(conversationRepository, conversationMemberRepository)
 	directConversationService := service.NewDirectConversationService(directConversationRepository, userRepository)
-	groupConversationService := service.NewGroupConversationService(groupConversationRepository, conversationMemberRepository, conversationRepository, userRepository)
-	messageService := service.NewMessageService(messageRepository, conversationRepository, userRepository, conversationMemberRepository)
-	readReceiptService := service.NewReadReceiptService(conversationRepository, conversationMemberRepository, messageRepository)
+	groupConversationService := service.NewGroupConversationService(
+		groupConversationRepository,
+		conversationMemberRepository,
+		conversationRepository,
+		userRepository,
+	)
+	messageService := service.NewMessageService(
+		messageRepository,
+		conversationRepository,
+		userRepository,
+		conversationMemberRepository,
+	)
+	readReceiptService := service.NewReadReceiptService(
+		conversationRepository,
+		conversationMemberRepository,
+		messageRepository,
+	)
 
 	websocketHub := ws.NewHub()
-
 	redisBroker := ws.NewRedisBroker(redisClient, cfg.InstanceID, websocketHub)
 	redisPresence := ws.NewRedisPresence(redisClient, cfg.InstanceID)
+
 	if err := redisBroker.Start(ctx); err != nil {
 		slog.Error("start redis realtime broker", "error", err)
 	}
@@ -55,7 +66,7 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 	conversationHandler := NewConversationHandler(conversationService)
 	directConversationHandler := NewDirectConversationHandler(directConversationService)
 	groupConversationHandler := NewGroupConversationHandler(groupConversationService)
-	messageHandler := NewMessageHandler(messageService)
+	messageHandler := NewMessageHandler(messageService, websocketHub, redisBroker)
 	readReceiptHandler := NewReadReceiptHandler(readReceiptService)
 	websocketHandler := NewWebSocketHandler(
 		websocketHub,
@@ -95,6 +106,8 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 		conversations.POST("/:id/leave", groupConversationHandler.Leave)
 		conversations.POST("/:id/messages", messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
+		conversations.PATCH("/:id/messages/:message_id", messageHandler.Update)
+		conversations.DELETE("/:id/messages/:message_id", messageHandler.Delete)
 		conversations.PATCH("/:id/read", readReceiptHandler.MarkRead)
 	}
 
