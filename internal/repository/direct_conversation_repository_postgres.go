@@ -25,11 +25,17 @@ func NewDirectConversationRepositoryPostgres(
 }
 
 func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, userID int64, targetUserID int64) (*model.Conversation, bool, error) {
-	userLowID, userHighID := normalizeUserPair(userID, targetUserID)
+	userLowID, userHighID := normalizeUserPair(
+		userID,
+		targetUserID,
+	)
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("begin direct conversation transaction: %w", err)
+		return nil, false, fmt.Errorf(
+			"begin direct conversation transaction: %w",
+			err,
+		)
 	}
 
 	defer func() {
@@ -37,6 +43,7 @@ func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, 
 	}()
 
 	conversation := &model.Conversation{
+		Type:  model.ConversationTypeDirect,
 		Title: "",
 	}
 
@@ -44,23 +51,30 @@ func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, 
 		ctx,
 		`
 			INSERT INTO conversations (
+				type,
 				title
 			)
-			VALUES ('')
+			VALUES ($1, '')
 			RETURNING
 				id,
+				type,
 				title,
 				created_at,
 				updated_at
 		`,
+		conversation.Type,
 	).Scan(
 		&conversation.ID,
+		&conversation.Type,
 		&conversation.Title,
 		&conversation.CreatedAt,
 		&conversation.UpdatedAt,
 	)
 	if err != nil {
-		return nil, false, fmt.Errorf("create direct conversation: %w", err)
+		return nil, false, fmt.Errorf(
+			"create direct conversation: %w",
+			err,
+		)
 	}
 
 	_, err = tx.Exec(
@@ -80,14 +94,13 @@ func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, 
 	if err != nil {
 		if isUniqueViolation(err) {
 			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
-				return nil, false, fmt.Errorf("rollback duplicate direct conversation: %w", rollbackErr)
+				return nil, false, fmt.Errorf(
+					"rollback duplicate direct conversation: %w",
+					rollbackErr,
+				)
 			}
 
-			existingConversation, getErr := r.getByUsers(
-				ctx,
-				userLowID,
-				userHighID,
-			)
+			existingConversation, getErr := r.getByUsers(ctx, userLowID, userHighID)
 			if getErr != nil {
 				return nil, false, getErr
 			}
@@ -95,7 +108,10 @@ func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, 
 			return existingConversation, false, nil
 		}
 
-		return nil, false, fmt.Errorf("create direct conversation mapping: %w", err)
+		return nil, false, fmt.Errorf(
+			"create direct conversation mapping: %w",
+			err,
+		)
 	}
 
 	_, err = tx.Exec(
@@ -104,11 +120,12 @@ func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, 
 			INSERT INTO conversation_members (
 				conversation_id,
 				user_id,
+				role,
 				last_read_message_id
 			)
 			VALUES
-				($1, $2, NULL),
-				($1, $3, NULL)
+				($1, $2, $4, NULL),
+				($1, $3, $4, NULL)
 			ON CONFLICT (
 				conversation_id,
 				user_id
@@ -117,9 +134,13 @@ func (r *DirectConversationRepositoryPostgres) CreateOrGet(ctx context.Context, 
 		conversation.ID,
 		userLowID,
 		userHighID,
+		model.ConversationRoleMember,
 	)
 	if err != nil {
-		return nil, false, fmt.Errorf("add direct conversation members: %w", err)
+		return nil, false, fmt.Errorf(
+			"add direct conversation members: %w",
+			err,
+		)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -140,6 +161,7 @@ func (r *DirectConversationRepositoryPostgres) getByUsers(ctx context.Context, u
 		`
 			SELECT
 				c.id,
+				c.type,
 				c.title,
 				c.created_at,
 				c.updated_at
@@ -153,6 +175,7 @@ func (r *DirectConversationRepositoryPostgres) getByUsers(ctx context.Context, u
 		userHighID,
 	).Scan(
 		&conversation.ID,
+		&conversation.Type,
 		&conversation.Title,
 		&conversation.CreatedAt,
 		&conversation.UpdatedAt,
@@ -162,7 +185,10 @@ func (r *DirectConversationRepositoryPostgres) getByUsers(ctx context.Context, u
 			return nil, nil
 		}
 
-		return nil, fmt.Errorf("get direct conversation: %w", err)
+		return nil, fmt.Errorf(
+			"get direct conversation: %w",
+			err,
+		)
 	}
 
 	return conversation, nil

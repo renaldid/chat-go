@@ -28,13 +28,14 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 	directConversationRepository := repository.NewDirectConversationRepositoryPostgres(db)
 	conversationMemberRepository := repository.NewConversationMemberRepositoryPostgres(db)
 	messageRepository := repository.NewMessageRepositoryPostgres(db)
+	groupConversationRepository := repository.NewGroupConversationRepositoryPostgres(db)
 	jwtManager := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiration)
 
 	userService := service.NewUserService(userRepository)
 	authService := service.NewAuthService(userRepository, jwtManager)
 	conversationService := service.NewConversationService(conversationRepository, conversationMemberRepository)
 	directConversationService := service.NewDirectConversationService(directConversationRepository, userRepository)
-	conversationMemberService := service.NewConversationMemberService(conversationRepository, userRepository, conversationMemberRepository)
+	groupConversationService := service.NewGroupConversationService(groupConversationRepository, conversationMemberRepository, conversationRepository, userRepository)
 	messageService := service.NewMessageService(messageRepository, conversationRepository, userRepository, conversationMemberRepository)
 	readReceiptService := service.NewReadReceiptService(conversationRepository, conversationMemberRepository, messageRepository)
 
@@ -53,7 +54,7 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 	authHandler := NewAuthHandler(authService)
 	conversationHandler := NewConversationHandler(conversationService)
 	directConversationHandler := NewDirectConversationHandler(directConversationService)
-	conversationMemberHandler := NewConversationMemberHandler(conversationMemberService)
+	groupConversationHandler := NewGroupConversationHandler(groupConversationService)
 	messageHandler := NewMessageHandler(messageService)
 	readReceiptHandler := NewReadReceiptHandler(readReceiptService)
 	websocketHandler := NewWebSocketHandler(
@@ -82,14 +83,19 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 	conversations := router.Group("/conversations")
 	conversations.Use(AuthMiddleware(jwtManager))
 	{
-		conversations.POST("", conversationHandler.Create)
+		conversations.POST("/direct", directConversationHandler.CreateOrGet)
+		conversations.POST("/group", groupConversationHandler.Create)
 		conversations.GET("", conversationHandler.List)
 		conversations.GET("/:id", conversationHandler.GetByID)
-		conversations.POST("/:id/members", conversationMemberHandler.Add)
+		conversations.PATCH("/:id", groupConversationHandler.Rename)
+		conversations.GET("/:id/members", groupConversationHandler.ListMembers)
+		conversations.POST("/:id/members", groupConversationHandler.AddMember)
+		conversations.DELETE("/:id/members/:user_id", groupConversationHandler.RemoveMember)
+		conversations.PATCH("/:id/members/:user_id/role", groupConversationHandler.UpdateRole)
+		conversations.POST("/:id/leave", groupConversationHandler.Leave)
 		conversations.POST("/:id/messages", messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
 		conversations.PATCH("/:id/read", readReceiptHandler.MarkRead)
-		conversations.POST("/direct", directConversationHandler.CreateOrGet)
 	}
 
 	router.GET("/ws/conversations/:id", websocketHandler.Connect)

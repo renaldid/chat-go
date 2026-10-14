@@ -37,18 +37,28 @@ func (s *ConversationService) Create(ctx context.Context, title string, creatorI
 		return nil, ErrConversationTitleRequired
 	}
 
-	conversation := &model.Conversation{Title: title}
+	conversation := &model.Conversation{
+		Type:  model.ConversationTypeGroup,
+		Title: title,
+	}
 
-	if err := s.conversationRepository.Create(ctx, conversation); err != nil {
+	if err := s.conversationRepository.Create(
+		ctx,
+		conversation,
+	); err != nil {
 		return nil, err
 	}
 
 	member := &model.ConversationMember{
 		ConversationID: conversation.ID,
 		UserID:         creatorID,
+		Role:           model.ConversationRoleOwner,
 	}
 
-	if err := s.conversationMemberRepository.Add(ctx, member); err != nil {
+	if err := s.conversationMemberRepository.Add(
+		ctx,
+		member,
+	); err != nil {
 		return nil, err
 	}
 
