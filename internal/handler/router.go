@@ -25,6 +25,7 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 
 	userRepository := repository.NewUserRepositoryPostgres(db)
 	conversationRepository := repository.NewConversationRepositoryPostgres(db)
+	directConversationRepository := repository.NewDirectConversationRepositoryPostgres(db)
 	conversationMemberRepository := repository.NewConversationMemberRepositoryPostgres(db)
 	messageRepository := repository.NewMessageRepositoryPostgres(db)
 	jwtManager := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiration)
@@ -32,6 +33,7 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 	userService := service.NewUserService(userRepository)
 	authService := service.NewAuthService(userRepository, jwtManager)
 	conversationService := service.NewConversationService(conversationRepository, conversationMemberRepository)
+	directConversationService := service.NewDirectConversationService(directConversationRepository, userRepository)
 	conversationMemberService := service.NewConversationMemberService(conversationRepository, userRepository, conversationMemberRepository)
 	messageService := service.NewMessageService(messageRepository, conversationRepository, userRepository, conversationMemberRepository)
 	readReceiptService := service.NewReadReceiptService(conversationRepository, conversationMemberRepository, messageRepository)
@@ -50,6 +52,7 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 	userHandler := NewUserHandler(userService)
 	authHandler := NewAuthHandler(authService)
 	conversationHandler := NewConversationHandler(conversationService)
+	directConversationHandler := NewDirectConversationHandler(directConversationService)
 	conversationMemberHandler := NewConversationMemberHandler(conversationMemberService)
 	messageHandler := NewMessageHandler(messageService)
 	readReceiptHandler := NewReadReceiptHandler(readReceiptService)
@@ -86,6 +89,7 @@ func NewRouter(ctx context.Context, db *pgxpool.Pool, redisClient *redis.Client,
 		conversations.POST("/:id/messages", messageHandler.Create)
 		conversations.GET("/:id/messages", messageHandler.GetByConversationID)
 		conversations.PATCH("/:id/read", readReceiptHandler.MarkRead)
+		conversations.POST("/direct", directConversationHandler.CreateOrGet)
 	}
 
 	router.GET("/ws/conversations/:id", websocketHandler.Connect)
