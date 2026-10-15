@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -28,22 +29,20 @@ func (r *MessageRepositoryPostgres) Create(ctx context.Context, message *model.M
 		_ = tx.Rollback(ctx)
 	}()
 
-	query := `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO messages (
 			conversation_id,
 			sender_id,
-			content
+			content,
+			reply_to_message_id
 		)
-		VALUES ($1, $2, $3)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at
-	`
-
-	err = tx.QueryRow(
-		ctx,
-		query,
+	`,
 		message.ConversationID,
 		message.SenderID,
 		message.Content,
+		message.ReplyToMessageID,
 	).Scan(
 		&message.ID,
 		&message.CreatedAt,
@@ -52,16 +51,11 @@ func (r *MessageRepositoryPostgres) Create(ctx context.Context, message *model.M
 		return fmt.Errorf("create message: %w", err)
 	}
 
-	_, err = tx.Exec(
-		ctx,
-		`
-			UPDATE conversations
-			SET updated_at = $1
-			WHERE id = $2
-		`,
-		message.CreatedAt,
-		message.ConversationID,
-	)
+	_, err = tx.Exec(ctx, `
+		UPDATE conversations
+		SET updated_at = $1
+		WHERE id = $2
+	`, message.CreatedAt, message.ConversationID)
 	if err != nil {
 		return fmt.Errorf("update conversation activity: %w", err)
 	}
@@ -70,26 +64,58 @@ func (r *MessageRepositoryPostgres) Create(ctx context.Context, message *model.M
 		return fmt.Errorf("commit create message transaction: %w", err)
 	}
 
+	createdMessage, err := r.GetByID(ctx, message.ID)
+	if err != nil {
+		return err
+	}
+	if createdMessage == nil {
+		return fmt.Errorf("created message not found")
+	}
+
+	*message = *createdMessage
 	return nil
 }
 
 func (r *MessageRepositoryPostgres) GetByConversationID(ctx context.Context, conversationID int64, beforeID *int64, limit int) ([]model.Message, error) {
-	query := `
-		SELECT id, conversation_id, sender_id, content, created_at, edited_at, deleted_at
-		FROM (
-			SELECT id, conversation_id, sender_id,
-				CASE WHEN deleted_at IS NULL THEN content ELSE '' END AS content,
-				created_at, edited_at, deleted_at
+	rows, err := r.db.Query(ctx, `
+		WITH selected_messages AS (
+			SELECT
+				id,
+				conversation_id,
+				sender_id,
+				content,
+				created_at,
+				edited_at,
+				deleted_at,
+				reply_to_message_id
 			FROM messages
 			WHERE conversation_id = $1
 			  AND ($2::BIGINT IS NULL OR id < $2)
 			ORDER BY id DESC
 			LIMIT $3
-		) result
-		ORDER BY id ASC
-	`
-
-	rows, err := r.db.Query(ctx, query, conversationID, beforeID, limit)
+		)
+		SELECT
+			m.id,
+			m.conversation_id,
+			m.sender_id,
+			CASE WHEN m.deleted_at IS NULL THEN m.content ELSE '' END,
+			m.created_at,
+			m.edited_at,
+			m.deleted_at,
+			m.reply_to_message_id,
+			rm.id,
+			rm.sender_id,
+			ru.username,
+			ru.display_name,
+			CASE WHEN rm.deleted_at IS NULL THEN rm.content ELSE '' END,
+			rm.created_at,
+			rm.edited_at,
+			rm.deleted_at
+		FROM selected_messages m
+		LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+		LEFT JOIN users ru ON ru.id = rm.sender_id
+		ORDER BY m.id ASC
+	`, conversationID, beforeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get messages by conversation id: %w", err)
 	}
@@ -98,19 +124,11 @@ func (r *MessageRepositoryPostgres) GetByConversationID(ctx context.Context, con
 	messages := make([]model.Message, 0)
 
 	for rows.Next() {
-		var message model.Message
-		if err := rows.Scan(
-			&message.ID,
-			&message.ConversationID,
-			&message.SenderID,
-			&message.Content,
-			&message.CreatedAt,
-			&message.EditedAt,
-			&message.DeletedAt,
-		); err != nil {
+		message, err := scanMessageWithReply(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
-		messages = append(messages, message)
+		messages = append(messages, *message)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -121,25 +139,31 @@ func (r *MessageRepositoryPostgres) GetByConversationID(ctx context.Context, con
 }
 
 func (r *MessageRepositoryPostgres) GetByID(ctx context.Context, id int64) (*model.Message, error) {
-	query := `
-		SELECT id, conversation_id, sender_id,
-			CASE WHEN deleted_at IS NULL THEN content ELSE '' END,
-			created_at, edited_at, deleted_at
-		FROM messages
-		WHERE id = $1
-	`
+	row := r.db.QueryRow(ctx, `
+		SELECT
+			m.id,
+			m.conversation_id,
+			m.sender_id,
+			CASE WHEN m.deleted_at IS NULL THEN m.content ELSE '' END,
+			m.created_at,
+			m.edited_at,
+			m.deleted_at,
+			m.reply_to_message_id,
+			rm.id,
+			rm.sender_id,
+			ru.username,
+			ru.display_name,
+			CASE WHEN rm.deleted_at IS NULL THEN rm.content ELSE '' END,
+			rm.created_at,
+			rm.edited_at,
+			rm.deleted_at
+		FROM messages m
+		LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+		LEFT JOIN users ru ON ru.id = rm.sender_id
+		WHERE m.id = $1
+	`, id)
 
-	message := &model.Message{}
-
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&message.ID,
-		&message.ConversationID,
-		&message.SenderID,
-		&message.Content,
-		&message.CreatedAt,
-		&message.EditedAt,
-		&message.DeletedAt,
-	)
+	message, err := scanMessageWithReply(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -151,45 +175,67 @@ func (r *MessageRepositoryPostgres) GetByID(ctx context.Context, id int64) (*mod
 }
 
 func (r *MessageRepositoryPostgres) UpdateContent(ctx context.Context, id int64, content string) (*model.Message, error) {
-	query := `
+	result, err := r.db.Exec(ctx, `
 		UPDATE messages
 		SET content = $2, edited_at = NOW()
-		WHERE id = $1 AND deleted_at IS NULL
-		RETURNING id, conversation_id, sender_id, content, created_at, edited_at, deleted_at
-	`
-
-	message := &model.Message{}
-
-	err := r.db.QueryRow(ctx, query, id, content).Scan(
-		&message.ID,
-		&message.ConversationID,
-		&message.SenderID,
-		&message.Content,
-		&message.CreatedAt,
-		&message.EditedAt,
-		&message.DeletedAt,
-	)
+		WHERE id = $1
+		  AND deleted_at IS NULL
+	`, id, content)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("update message content: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return nil, nil
+	}
+
+	message, err := r.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
 	return message, nil
 }
 
 func (r *MessageRepositoryPostgres) SoftDelete(ctx context.Context, id int64) (*model.Message, error) {
-	query := `
+	result, err := r.db.Exec(ctx, `
 		UPDATE messages
 		SET deleted_at = NOW()
-		WHERE id = $1 AND deleted_at IS NULL
-		RETURNING id, conversation_id, sender_id, '' AS content, created_at, edited_at, deleted_at
-	`
+		WHERE id = $1
+		  AND deleted_at IS NULL
+	`, id)
+	if err != nil {
+		return nil, fmt.Errorf("soft delete message: %w", err)
+	}
 
+	if result.RowsAffected() == 0 {
+		return nil, nil
+	}
+
+	message, err := r.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return message, nil
+}
+
+func scanMessageWithReply(scanner interface{ Scan(...any) error }) (*model.Message, error) {
 	message := &model.Message{}
 
-	err := r.db.QueryRow(ctx, query, id).Scan(
+	var (
+		replyToMessageID       sql.NullInt64
+		replyID                sql.NullInt64
+		replySenderID          sql.NullInt64
+		replySenderUsername    sql.NullString
+		replySenderDisplayName sql.NullString
+		replyContent           sql.NullString
+		replyCreatedAt         sql.NullTime
+		replyEditedAt          sql.NullTime
+		replyDeletedAt         sql.NullTime
+	)
+
+	err := scanner.Scan(
 		&message.ID,
 		&message.ConversationID,
 		&message.SenderID,
@@ -197,12 +243,46 @@ func (r *MessageRepositoryPostgres) SoftDelete(ctx context.Context, id int64) (*
 		&message.CreatedAt,
 		&message.EditedAt,
 		&message.DeletedAt,
+		&replyToMessageID,
+		&replyID,
+		&replySenderID,
+		&replySenderUsername,
+		&replySenderDisplayName,
+		&replyContent,
+		&replyCreatedAt,
+		&replyEditedAt,
+		&replyDeletedAt,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+		return nil, err
+	}
+
+	if replyToMessageID.Valid {
+		id := replyToMessageID.Int64
+		message.ReplyToMessageID = &id
+	}
+
+	if replyID.Valid {
+		reply := &model.MessageReply{
+			ID:                replyID.Int64,
+			SenderID:          replySenderID.Int64,
+			SenderUsername:    replySenderUsername.String,
+			SenderDisplayName: replySenderDisplayName.String,
+			Content:           replyContent.String,
+			CreatedAt:         replyCreatedAt.Time,
 		}
-		return nil, fmt.Errorf("soft delete message: %w", err)
+
+		if replyEditedAt.Valid {
+			editedAt := replyEditedAt.Time
+			reply.EditedAt = &editedAt
+		}
+
+		if replyDeletedAt.Valid {
+			deletedAt := replyDeletedAt.Time
+			reply.DeletedAt = &deletedAt
+		}
+
+		message.ReplyTo = reply
 	}
 
 	return message, nil

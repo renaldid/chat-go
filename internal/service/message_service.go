@@ -10,10 +10,13 @@ import (
 )
 
 var (
-	ErrMessageContentRequired      = errors.New("message content is required")
-	ErrSenderNotConversationMember = errors.New("sender is not a conversation member")
-	ErrMessagePermissionDenied     = errors.New("message permission denied")
-	ErrMessageCannotEditDeleted    = errors.New("deleted message cannot be edited")
+	ErrMessageContentRequired        = errors.New("message content is required")
+	ErrSenderNotConversationMember   = errors.New("sender is not a conversation member")
+	ErrMessagePermissionDenied       = errors.New("message permission denied")
+	ErrMessageCannotEditDeleted      = errors.New("deleted message cannot be edited")
+	ErrReplyMessageNotFound          = errors.New("reply message not found")
+	ErrReplyMessageNotInConversation = errors.New("reply message does not belong to conversation")
+	ErrCannotReplyDeletedMessage     = errors.New("cannot reply to deleted message")
 )
 
 type MessageService struct {
@@ -207,6 +210,66 @@ func (s *MessageService) Delete(ctx context.Context, conversationID int64, userI
 	}
 
 	return deleted, true, nil
+}
+
+func (s *MessageService) CreateWithReply(ctx context.Context, conversationID int64, senderID int64, content string, replyToMessageID *int64) (*model.Message, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, ErrMessageContentRequired
+	}
+
+	conversation, err := s.conversationRepository.GetByID(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if conversation == nil {
+		return nil, ErrConversationNotFound
+	}
+
+	user, err := s.userRepository.GetByID(ctx, senderID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, ErrUserNotFound
+	}
+
+	isMember, err := s.conversationMemberRepository.Exists(ctx, conversationID, senderID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, ErrSenderNotConversationMember
+	}
+
+	if replyToMessageID != nil {
+		replyMessage, err := s.messageRepository.GetByID(ctx, *replyToMessageID)
+		if err != nil {
+			return nil, err
+		}
+		if replyMessage == nil {
+			return nil, ErrReplyMessageNotFound
+		}
+		if replyMessage.ConversationID != conversationID {
+			return nil, ErrReplyMessageNotInConversation
+		}
+		if replyMessage.DeletedAt != nil {
+			return nil, ErrCannotReplyDeletedMessage
+		}
+	}
+
+	message := &model.Message{
+		ConversationID:   conversationID,
+		SenderID:         senderID,
+		Content:          content,
+		ReplyToMessageID: replyToMessageID,
+	}
+
+	if err := s.messageRepository.Create(ctx, message); err != nil {
+		return nil, err
+	}
+
+	return message, nil
 }
 
 func (s *MessageService) messageForMutation(ctx context.Context, conversationID int64, userID int64, messageID int64) (*model.Message, error) {

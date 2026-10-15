@@ -27,74 +27,71 @@ func NewMessageHandler(messageService *service.MessageService, hub *ws.Hub, brok
 }
 
 type createMessageRequest struct {
-	Content string `json:"content"`
+	Content          string `json:"content"`
+	ReplyToMessageID *int64 `json:"reply_to_message_id,omitempty"`
 }
 type updateMessageRequest struct {
 	Content string `json:"content"`
 }
 
 func (h *MessageHandler) Create(c *gin.Context) {
-	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || conversationID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid conversation id",
-		})
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
-	userID, ok := authenticatedUserID(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "unauthorized",
-		})
+	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || conversationID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
 		return
 	}
 
 	var req createMessageRequest
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid request body",
-		})
+		slog.Warn("create message invalid request",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"error", err,
+		)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	message, err := h.messageService.Create(
+	message, err := h.messageService.CreateWithReply(
 		c.Request.Context(),
 		conversationID,
 		userID,
 		req.Content,
+		req.ReplyToMessageID,
 	)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrMessageContentRequired):
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": service.ErrMessageContentRequired.Error(),
-			})
-
-		case errors.Is(err, service.ErrConversationNotFound):
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": service.ErrConversationNotFound.Error(),
-			})
-
-		case errors.Is(err, service.ErrUserNotFound):
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": service.ErrUserNotFound.Error(),
-			})
-
-		case errors.Is(err, service.ErrSenderNotConversationMember):
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": service.ErrSenderNotConversationMember.Error(),
-			})
-
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "internal server error",
-			})
-		}
-
+		writeCreateMessageError(c, conversationID, userID, req.ReplyToMessageID, err)
 		return
 	}
+
+	event := ws.Event{
+		Type: "message",
+		Data: message,
+	}
+
+	h.hub.Broadcast(conversationID, event)
+
+	if err := h.broker.Publish(c.Request.Context(), conversationID, event); err != nil {
+		slog.Error("publish rest message failed",
+			"conversation_id", conversationID,
+			"message_id", message.ID,
+			"user_id", userID,
+			"error", err,
+		)
+	}
+
+	slog.Info("message created",
+		"conversation_id", conversationID,
+		"message_id", message.ID,
+		"user_id", userID,
+		"reply_to_message_id", req.ReplyToMessageID,
+	)
 
 	c.JSON(http.StatusCreated, message)
 }
@@ -294,6 +291,59 @@ func writeMessageMutationError(c *gin.Context, action string, conversationID int
 			"conversation_id", conversationID,
 			"message_id", messageID,
 			"user_id", userID,
+			"error", err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	}
+}
+
+func writeCreateMessageError(c *gin.Context, conversationID int64, userID int64, replyToMessageID *int64, err error) {
+	switch {
+	case errors.Is(err, service.ErrConversationNotFound),
+		errors.Is(err, service.ErrUserNotFound),
+		errors.Is(err, service.ErrReplyMessageNotFound):
+		slog.Warn("create message rejected",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"reply_to_message_id", replyToMessageID,
+			"error", err,
+		)
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+
+	case errors.Is(err, service.ErrSenderNotConversationMember),
+		errors.Is(err, service.ErrConversationAccessDenied):
+		slog.Warn("create message rejected",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"reply_to_message_id", replyToMessageID,
+			"error", err,
+		)
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+
+	case errors.Is(err, service.ErrMessageContentRequired),
+		errors.Is(err, service.ErrReplyMessageNotInConversation):
+		slog.Warn("create message rejected",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"reply_to_message_id", replyToMessageID,
+			"error", err,
+		)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+
+	case errors.Is(err, service.ErrCannotReplyDeletedMessage):
+		slog.Warn("create message rejected",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"reply_to_message_id", replyToMessageID,
+			"error", err,
+		)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+
+	default:
+		slog.Error("create message failed",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"reply_to_message_id", replyToMessageID,
 			"error", err,
 		)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})

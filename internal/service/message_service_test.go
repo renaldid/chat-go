@@ -512,3 +512,125 @@ func TestMessageServiceDelete(t *testing.T) {
 		t.Fatal("expected second delete to be idempotent")
 	}
 }
+
+func TestMessageServiceCreateWithReply(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	user, err := userService.Create(context.Background(), "reply-user", "Reply User", "password123")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	conversationService := NewConversationService(conversationRepo, memberRepo)
+	conversation, err := conversationService.Create(context.Background(), "Reply Test", user.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	svc := NewMessageService(messageRepo, conversationRepo, userRepo, memberRepo)
+
+	original, err := svc.Create(context.Background(), conversation.ID, user.ID, "original message")
+	if err != nil {
+		t.Fatalf("create original message: %v", err)
+	}
+
+	reply, err := svc.CreateWithReply(
+		context.Background(),
+		conversation.ID,
+		user.ID,
+		"reply message",
+		&original.ID,
+	)
+	if err != nil {
+		t.Fatalf("create reply message: %v", err)
+	}
+
+	if reply.ReplyToMessageID == nil {
+		t.Fatal("expected reply_to_message_id")
+	}
+
+	if *reply.ReplyToMessageID != original.ID {
+		t.Fatalf(
+			"expected reply message id %d, got %d",
+			original.ID,
+			*reply.ReplyToMessageID,
+		)
+	}
+}
+
+func TestMessageServiceReplyDifferentConversation(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	user, _ := userService.Create(context.Background(), "reply-user", "Reply User", "password123")
+
+	conversationService := NewConversationService(conversationRepo, memberRepo)
+	conversation1, _ := conversationService.Create(context.Background(), "Chat 1", user.ID)
+	conversation2, _ := conversationService.Create(context.Background(), "Chat 2", user.ID)
+
+	svc := NewMessageService(messageRepo, conversationRepo, userRepo, memberRepo)
+	original, _ := svc.Create(context.Background(), conversation2.ID, user.ID, "original")
+
+	_, err := svc.CreateWithReply(
+		context.Background(),
+		conversation1.ID,
+		user.ID,
+		"wrong conversation reply",
+		&original.ID,
+	)
+
+	if !errors.Is(err, ErrReplyMessageNotInConversation) {
+		t.Fatalf(
+			"expected ErrReplyMessageNotInConversation, got %v",
+			err,
+		)
+	}
+}
+
+func TestMessageServiceReplyDeletedMessage(t *testing.T) {
+	userRepo := newMockUserRepository()
+	conversationRepo := newMockConversationRepository()
+	memberRepo := newMockConversationMemberRepository()
+	messageRepo := newMockMessageRepository()
+
+	userService := NewUserService(userRepo)
+	user, _ := userService.Create(context.Background(), "reply-user", "Reply User", "password123")
+
+	conversationService := NewConversationService(conversationRepo, memberRepo)
+	conversation, _ := conversationService.Create(context.Background(), "Reply Test", user.ID)
+
+	svc := NewMessageService(messageRepo, conversationRepo, userRepo, memberRepo)
+	original, _ := svc.Create(context.Background(), conversation.ID, user.ID, "original")
+
+	_, _, err := svc.Delete(
+		context.Background(),
+		conversation.ID,
+		user.ID,
+		original.ID,
+	)
+	if err != nil {
+		t.Fatalf("delete original message: %v", err)
+	}
+
+	_, err = svc.CreateWithReply(
+		context.Background(),
+		conversation.ID,
+		user.ID,
+		"reply deleted",
+		&original.ID,
+	)
+
+	if !errors.Is(err, ErrCannotReplyDeletedMessage) {
+		t.Fatalf(
+			"expected ErrCannotReplyDeletedMessage, got %v",
+			err,
+		)
+	}
+}

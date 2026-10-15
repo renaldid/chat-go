@@ -27,8 +27,9 @@ type WebSocketHandler struct {
 }
 
 type websocketRequest struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
+	Type             string `json:"type"`
+	Content          string `json:"content,omitempty"`
+	ReplyToMessageID *int64 `json:"reply_to_message_id,omitempty"`
 }
 
 func NewWebSocketHandler(
@@ -283,6 +284,7 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 				claims.UserID,
 				conversationID,
 				req.Content,
+				req.ReplyToMessageID,
 			)
 
 		case "typing_start":
@@ -310,20 +312,22 @@ func (h *WebSocketHandler) Connect(c *gin.Context) {
 	}
 }
 
-func (h *WebSocketHandler) handleMessage(
-	c *gin.Context,
-	client *ws.Client,
-	userID int64,
-	conversationID int64,
-	content string,
-) {
-	message, err := h.messageService.Create(
+func (h *WebSocketHandler) handleMessage(c *gin.Context, client *ws.Client, userID int64, conversationID int64, content string, replyToMessageID *int64) {
+	message, err := h.messageService.CreateWithReply(
 		c.Request.Context(),
 		conversationID,
 		userID,
 		content,
+		replyToMessageID,
 	)
 	if err != nil {
+		slog.Warn("websocket create message rejected",
+			"conversation_id", conversationID,
+			"user_id", userID,
+			"reply_to_message_id", replyToMessageID,
+			"error", err,
+		)
+
 		client.SendEvent(ws.Event{
 			Type:  "error",
 			Error: err.Error(),
@@ -336,23 +340,23 @@ func (h *WebSocketHandler) handleMessage(
 		Data: message,
 	}
 
-	h.hub.Broadcast(
-		conversationID,
-		event,
-	)
+	h.hub.Broadcast(conversationID, event)
 
-	if err := h.broker.Publish(
-		c.Request.Context(),
-		conversationID,
-		event,
-	); err != nil {
-		slog.Error(
-			"publish websocket message",
+	if err := h.broker.Publish(c.Request.Context(), conversationID, event); err != nil {
+		slog.Error("publish websocket message failed",
 			"conversation_id", conversationID,
+			"message_id", message.ID,
 			"user_id", userID,
 			"error", err,
 		)
 	}
+
+	slog.Info("websocket message created",
+		"conversation_id", conversationID,
+		"message_id", message.ID,
+		"user_id", userID,
+		"reply_to_message_id", replyToMessageID,
+	)
 }
 
 func (h *WebSocketHandler) handleTyping(
